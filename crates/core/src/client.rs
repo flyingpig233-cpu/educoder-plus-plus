@@ -116,8 +116,12 @@ impl EducoderClient {
     /// Matches the reference endpoint; pagination of this endpoint is unverified.
     pub async fn get_courses(&self) -> Result<Page<Course>> {
         let user = self.get_user_info().await?;
-        valid_id(&user.login)?;
-        self.get::<CoursesDto>(&format!("/api/users/{}/courses.json", user.login), &[])
+        self.get_courses_for(&user.login).await
+    }
+
+    pub async fn get_courses_for(&self, login: &str) -> Result<Page<Course>> {
+        valid_id(login)?;
+        self.get::<CoursesDto>(&format!("/api/users/{login}/courses.json"), &[])
             .await
             .map(Into::into)
     }
@@ -187,6 +191,173 @@ impl EducoderClient {
         self.get::<TaskDto>(&format!("/api/tasks/{game_identifier}.json"), &[])
             .await
             .map(|t| t.into_task(game_identifier))
+    }
+
+    pub async fn get_task_details(
+        &self,
+        game_identifier: &str,
+        homework_id: u64,
+    ) -> Result<TaskDetails> {
+        valid_id(game_identifier)?;
+        self.get::<TaskDetailsDto>(
+            &format!("/api/tasks/{game_identifier}.json"),
+            &[("homework_common_id", homework_id.to_string())],
+        )
+        .await
+        .map(|dto| dto.into_details(game_identifier, homework_id))
+    }
+
+    /// Explicit save, restricted to files advertised as editable by this task.
+    pub async fn save_files(
+        &self,
+        task: &TaskDetails,
+        files: &[CodeFile],
+        for_evaluation: bool,
+    ) -> Result<SaveReceipt> {
+        let context = task
+            .submission
+            .as_ref()
+            .ok_or(Error::InvalidInput("该题缺少可提交的运行环境或上下文"))?;
+        valid_id(&context.myshixun_identifier)?;
+        if files.is_empty() {
+            return Err(Error::InvalidInput("没有需要保存的代码文件"));
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut total = 0usize;
+        for file in files {
+            valid_repo_path(&file.path)?;
+            if !seen.insert(&file.path) {
+                return Err(Error::InvalidInput("代码文件路径重复"));
+            }
+            total = total
+                .checked_add(file.content.len())
+                .ok_or(Error::ResponseTooLarge)?;
+            if total > self.inner.options.max_response_bytes {
+                return Err(Error::InvalidInput("代码总大小超过限制"));
+            }
+            if !task.task.editable_paths.contains(&file.path) {
+                return Err(Error::InvalidInput("文件不属于当前题目的可编辑范围"));
+            }
+            if file.content.len() > self.inner.options.max_response_bytes || file.text().is_err() {
+                return Err(Error::InvalidInput("代码文件过大或不是 UTF-8 文本"));
+            }
+        }
+        let extras = serde_json::json!({
+            "challenge_id": context.challenge_id,
+            "homework_common_id": context.homework_id,
+            "currentUserId": context.user_id,
+            "exercise_id": "", "question_id": "", "subject_id": "", "competition_entry_id": ""
+        });
+        let mut receipt = None;
+        for (index, file) in files.iter().enumerate() {
+            let body = serde_json::json!({
+                "path": file.path,
+                "evaluate": u8::from(for_evaluation && index + 1 == files.len()),
+                "content": file.text().map_err(|_| Error::InvalidInput("代码编码"))?,
+                "game_id": context.game_id, "tab_type": context.tab_type,
+                "homework_common_id": context.homework_id, "extras": extras
+            });
+            let response = self
+                .request::<SaveDto>(
+                    Method::POST,
+                    &format!(
+                        "/api/myshixuns/{}/update_file.json",
+                        context.myshixun_identifier
+                    ),
+                    &[],
+                    Some(&body),
+                )
+                .await
+                .map_err(write_error)?
+                .into_receipt();
+            if response.commit_id.is_empty() {
+                return Err(Error::WriteUncertain);
+            }
+            receipt = Some(response);
+        }
+        receipt.ok_or(Error::WriteUncertain)
+    }
+
+    /// Save all files, then start exactly one evaluation. Never retries writes.
+    pub async fn submit_code(&self, task: &TaskDetails, files: &[CodeFile]) -> Result<()> {
+        let receipt = self.save_files(task, files, true).await?;
+        let context = task
+            .submission
+            .as_ref()
+            .ok_or(Error::InvalidInput("缺少提交上下文"))?;
+        if receipt.sec_key.is_empty() {
+            return Err(Error::WriteUncertain);
+        }
+        let resubmit = if receipt.resubmit.is_null() {
+            serde_json::json!("")
+        } else {
+            receipt.resubmit
+        };
+        let content_modified = if receipt.content_modified.is_null() {
+            serde_json::json!(0)
+        } else {
+            receipt.content_modified
+        };
+        let body = serde_json::json!({
+            "sec_key": receipt.sec_key, "resubmit": resubmit,
+            "first": 1, "content_modified": content_modified,
+            "shixun_environment_id": context.environment_id, "tab_type": context.tab_type,
+            "extras": {
+                "challenge_id": context.challenge_id, "commitID": receipt.commit_id,
+                "homework_common_id": context.homework_id, "currentUserId": context.user_id,
+                "exercise_id": "", "question_id": "", "subject_id": "", "competition_entry_id": ""
+            }
+        });
+        self.request::<Value>(
+            Method::POST,
+            &format!("/api/tasks/{}/game_build.json", task.task.game_identifier),
+            &[],
+            Some(&body),
+        )
+        .await
+        .map_err(write_error)?;
+        Ok(())
+    }
+
+    pub async fn wait_for_evaluation(
+        &self,
+        previous: &TaskDetails,
+        timeout: Duration,
+    ) -> Result<TaskDetails> {
+        let homework_id = previous
+            .submission
+            .as_ref()
+            .map(|c| c.homework_id)
+            .unwrap_or_default();
+        let started = Instant::now();
+        let mut saw_running = false;
+        while started.elapsed() < timeout {
+            tokio::time::sleep(
+                Duration::from_secs(2).min(timeout.saturating_sub(started.elapsed())),
+            )
+            .await;
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                break;
+            }
+            let current = tokio::time::timeout(
+                remaining,
+                self.get_task_details(&previous.task.game_identifier, homework_id),
+            )
+            .await
+            .map_err(|_| Error::EvaluationPending)??;
+            saw_running |= current.evaluation.status == 1;
+            let changed = current
+                .evaluation
+                .revision
+                .zip(previous.evaluation.revision)
+                .is_some_and(|(now, old)| now > old)
+                || current.evaluation != previous.evaluation;
+            if matches!(current.evaluation.status, 2 | 3) && (saw_running || changed) {
+                return Ok(current);
+            }
+        }
+        Err(Error::EvaluationPending)
     }
 
     pub async fn get_file_content(&self, game_identifier: &str, path: &str) -> Result<CodeFile> {
@@ -261,6 +432,26 @@ impl EducoderClient {
         Ok(response.game_identifier)
     }
 
+    pub async fn enter_shixun_for_homework(
+        &self,
+        shixun_identifier: &str,
+        homework_id: u64,
+    ) -> Result<String> {
+        valid_id(shixun_identifier)?;
+        if homework_id == 0 {
+            return Err(Error::InvalidInput("作业 ID 无效"));
+        }
+        let response = self
+            .get::<EnterDto>(
+                &format!("/api/shixuns/{shixun_identifier}/shixun_exec.json"),
+                &[("homework_common_id", homework_id.to_string())],
+            )
+            .await
+            .map_err(write_error)?;
+        valid_id(&response.game_identifier).map_err(|_| Error::WriteUncertain)?;
+        Ok(response.game_identifier)
+    }
+
     async fn wait_turn(&self) {
         let mut next = self.inner.next_request.lock().await;
         tokio::time::sleep_until(*next).await;
@@ -300,6 +491,16 @@ impl EducoderClient {
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str, query: &[(&str, String)]) -> Result<T> {
+        self.request(Method::GET, path, query, None).await
+    }
+
+    async fn request<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+    ) -> Result<T> {
         // The transport has no public arbitrary URL API: credentials stay on the fixed origin.
         let mut url = self
             .inner
@@ -336,7 +537,7 @@ impl EducoderClient {
         );
         headers.insert(
             "x-edu-signature",
-            HeaderValue::from_str(&signing::signature(Method::GET.as_str(), timestamp))
+            HeaderValue::from_str(&signing::signature(method.as_str(), timestamp))
                 .map_err(|_| Error::Clock)?,
         );
         headers.insert("x-original-protocol", HeaderValue::from_static("https:"));
@@ -354,14 +555,11 @@ impl EducoderClient {
         );
         headers.insert(header::REFERER, HeaderValue::from_static(ORIGIN));
         headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
-        let mut response = self
-            .inner
-            .http
-            .get(url)
-            .headers(headers)
-            .send()
-            .await
-            .map_err(Error::Transport)?;
+        let mut request = self.inner.http.request(method, url).headers(headers);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let mut response = request.send().await.map_err(Error::Transport)?;
         let status = response.status();
         if status.as_u16() == 401
             || (status.is_redirection()
@@ -401,6 +599,13 @@ impl EducoderClient {
     }
 }
 
+fn write_error(error: Error) -> Error {
+    match error {
+        Error::Transport(_) | Error::Response(_) | Error::ResponseTooLarge => Error::WriteUncertain,
+        other => other,
+    }
+}
+
 fn now_ms() -> Result<i64> {
     i64::try_from(
         SystemTime::now()
@@ -424,7 +629,7 @@ fn valid_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn valid_repo_path(path: &str) -> Result<()> {
+pub(crate) fn valid_repo_path(path: &str) -> Result<()> {
     if path.is_empty()
         || path.contains(['\\', ':'])
         || path.chars().any(char::is_control)

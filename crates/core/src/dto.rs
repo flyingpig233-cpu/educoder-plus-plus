@@ -140,6 +140,7 @@ impl From<ShixunDto> for Shixun {
 
 #[derive(Deserialize)]
 struct TaskChallengeDto {
+    id: Option<u64>,
     subject: String,
     position: u32,
     task_pass: Option<String>,
@@ -152,6 +153,124 @@ struct NameDto {
 #[derive(Deserialize)]
 struct InstanceDto {
     identifier: String,
+}
+
+#[derive(Deserialize)]
+struct EvaluationGameDto {
+    id: Option<u64>,
+    status: i32,
+    user_id: Option<u64>,
+    evaluate_count: Option<u64>,
+}
+#[derive(Deserialize)]
+struct EvaluationUserDto {
+    user_id: Option<u64>,
+}
+#[derive(Deserialize)]
+struct EnvironmentDto {
+    shixun_environment_id: u64,
+    tab_type: Option<u32>,
+}
+#[derive(Deserialize)]
+struct TestCaseDto {
+    name: Option<String>,
+    input: Option<String>,
+    output: Option<String>,
+    actual_output: Option<String>,
+    #[serde(default)]
+    is_public: bool,
+    result: Option<bool>,
+}
+#[derive(Deserialize)]
+pub(crate) struct TaskDetailsDto {
+    #[serde(flatten)]
+    task: TaskDto,
+    game: EvaluationGameDto,
+    user: Option<EvaluationUserDto>,
+    homework_common_id: Option<u64>,
+    #[serde(default)]
+    shixun_environments: Vec<EnvironmentDto>,
+    #[serde(default)]
+    test_sets: Vec<TestCaseDto>,
+    last_compile_output: Option<String>,
+    evaluate_count: Option<u64>,
+}
+
+impl TaskDetailsDto {
+    pub fn into_details(self, game: &str, homework_id: u64) -> TaskDetails {
+        let user_id = self.user.and_then(|u| u.user_id).or(self.game.user_id);
+        let submission = match (
+            self.game.id,
+            self.task.challenge.id,
+            user_id,
+            self.task.myshixun.as_ref(),
+            self.shixun_environments.first(),
+        ) {
+            (Some(game_id), Some(challenge_id), Some(user_id), Some(instance), Some(env)) => {
+                Some(SubmissionContext {
+                    game_id,
+                    challenge_id,
+                    user_id,
+                    homework_id: self
+                        .homework_common_id
+                        .filter(|id| *id > 0)
+                        .unwrap_or(homework_id),
+                    myshixun_identifier: instance.identifier.clone(),
+                    environment_id: env.shixun_environment_id,
+                    tab_type: env.tab_type.unwrap_or(1),
+                })
+            }
+            _ => None,
+        };
+        TaskDetails {
+            task: self.task.into_task(game),
+            submission,
+            evaluation: Evaluation {
+                status: self.game.status,
+                revision: self.evaluate_count.or(self.game.evaluate_count),
+                compile_output: self.last_compile_output.unwrap_or_default(),
+                tests: self
+                    .test_sets
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, t)| TestCase {
+                        name: t.name.unwrap_or_else(|| format!("测试集 {}", index + 1)),
+                        // Never display or execute private test inputs/expected outputs.
+                        input: t.is_public.then_some(t.input).flatten(),
+                        expected: t.is_public.then_some(t.output).flatten(),
+                        actual: t.actual_output,
+                        public: t.is_public,
+                        passed: t.result,
+                    })
+                    .collect(),
+            },
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SaveDto {
+    content: SaveContentDto,
+    sec_key: Option<String>,
+    #[serde(default)]
+    resubmit: serde_json::Value,
+    #[serde(default)]
+    content_modified: serde_json::Value,
+}
+#[derive(Deserialize)]
+struct SaveContentDto {
+    #[serde(rename = "commitID")]
+    commit_id: String,
+}
+impl SaveDto {
+    pub fn into_receipt(self) -> SaveReceipt {
+        SaveReceipt {
+            commit_id: self.content.commit_id,
+            sec_key: self.sec_key.unwrap_or_default(),
+            resubmit: self.resubmit,
+            content_modified: self.content_modified,
+        }
+    }
 }
 #[derive(Deserialize)]
 pub(crate) struct TaskDto {

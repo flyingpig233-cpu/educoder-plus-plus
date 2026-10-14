@@ -1,0 +1,183 @@
+import * as monaco from 'monaco-editor/editor/editor.api.js';
+import 'monaco-editor/languages/definitions/cpp/register.js';
+import 'monaco-editor/languages/definitions/rust/register.js';
+import 'monaco-editor/languages/definitions/python/register.js';
+import 'monaco-editor/languages/definitions/java/register.js';
+import 'monaco-editor/languages/definitions/javascript/register.js';
+import 'monaco-editor/languages/definitions/sql/register.js';
+import 'monaco-editor/languages/definitions/shell/register.js';
+import 'monaco-editor/editor/contrib/find/browser/findController.js';
+import 'monaco-editor/editor/contrib/folding/browser/folding.js';
+import 'monaco-editor/editor/contrib/bracketMatching/browser/bracketMatching.js';
+import 'monaco-editor/editor/contrib/hover/browser/hoverContribution.js';
+import 'monaco-editor/editor/contrib/comment/browser/comment.js';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+import './style.css';
+
+self.MonacoEnvironment = { getWorker: () => new Worker(new URL('editor.worker.js', location.href), { name: 'educoder-editor' }) };
+const $ = id => document.getElementById(id);
+const pending = new Map();
+const models = new Map();
+const state = { game: '', task: null, base: new Map(), files: [], busy: false, conflict: false, connected: false, samples: [], sampleIndex: 0, sequence: 0 };
+let draftTimer, draftQueue = Promise.resolve(), draftError = false, activeTab = 'local';
+const editor = monaco.editor.create($('editor'), { theme:'vs-dark', automaticLayout:true, fontFamily:'Consolas, monospace', fontSize:14, lineHeight:22, minimap:{enabled:false}, scrollBeyondLastLine:false, smoothScrolling:true, padding:{top:14}, readOnly:true, ariaLabel:'代码编辑器', tabSize:4, insertSpaces:true, fixedOverflowWidgets:true });
+const language = path => ({rs:'rust',py:'python',c:'cpp',cpp:'cpp',cc:'cpp',cxx:'cpp',h:'cpp',java:'java',js:'javascript',mjs:'javascript',sql:'sql',sh:'shell'})[path.split('.').pop()?.toLowerCase()] || 'plaintext';
+
+function notify(action, payload = {}) { window.ipc?.postMessage(JSON.stringify({ action, context:state.game, payload })); }
+function request(action, payload = {}) {
+  if (!window.ipc) return Promise.reject(new Error('桌面连接不可用'));
+  const id = `${Date.now()}-${++state.sequence}`;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error('操作尚未完成，请刷新状态后确认结果。')); }, 180000);
+    pending.set(id, { resolve, reject, timer });
+    window.ipc.postMessage(JSON.stringify({ id, action, context:state.game, payload }));
+  });
+}
+function error(message = '') { $('error').textContent = message; $('error').hidden = !message; }
+function notice(message = '') { $('notice').textContent = message; $('notice').hidden = !message; }
+function options(select, rows, value) {
+  select.replaceChildren(...rows.map(row => { const option=document.createElement('option'); option.value=row.value; option.textContent=row.text; return option; }));
+  if (value != null) select.value = value;
+}
+function allFiles() { return state.files.filter(f => !f.read_only).map(f => ({ path:f.path, content:models.get(`${state.game}:${f.path}`)?.getValue() ?? f.content })); }
+function hasChanges() { return allFiles().some(f => state.base.get(f.path) !== f.content); }
+function updateButtons() {
+  const writable = !!state.task && state.files.some(f => !f.read_only);
+  $('save').disabled = state.busy || !state.connected || !state.task?.can_submit || state.conflict || !writable;
+  $('submit').disabled = $('save').disabled;
+  $('run').disabled = state.busy || !writable;
+  $('files').disabled = state.files.length === 0;
+  $('games').disabled = state.busy;
+  $('back').disabled = state.busy;
+  $('refresh-task').disabled = state.busy || !state.task || !state.connected;
+  $('refresh-result').disabled = state.busy || !state.task || !state.connected;
+  $('enter').disabled = state.busy || !state.connected;
+  $('dirty').textContent = hasChanges() ? (draftError ? '草稿保存失败' : '本地草稿') : '已同步';
+  $('conflict').hidden = !state.conflict;
+}
+function selectFile(path) {
+  const file=state.files.find(f=>f.path===path); if(!file)return;
+  const key=`${state.game}:${path}`;
+  let model=models.get(key);
+  if(!model){ model=monaco.editor.createModel(file.content, language(path), monaco.Uri.parse(`inmemory://educoder/${encodeURIComponent(state.game)}/${encodeURIComponent(path)}`)); models.set(key,model); }
+  editor.setModel(model); editor.updateOptions({readOnly:!!file.read_only}); $('files').value=path; updateButtons();
+}
+editor.onDidChangeModelContent(() => { updateButtons(); clearTimeout(draftTimer); draftTimer=setTimeout(()=>flushDraft().catch(e=>error(e.message)),500); });
+editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, ()=>flushDraft().then(()=>notice('本地草稿已保存')).catch(e=>error(e.message)));
+
+function storeSample() {
+  const sample=state.samples[state.sampleIndex]; if(sample){sample.input=$('stdin').value; sample.expected=$('expected').value || null;}
+}
+function showSamples() {
+  options($('samples'),state.samples.map((s,index)=>({value:String(index),text:s.name})),String(state.sampleIndex));
+  const sample=state.samples[state.sampleIndex]; $('stdin').value=sample?.input??''; $('expected').value=sample?.expected??'';
+}
+function flushDraft() {
+  clearTimeout(draftTimer); storeSample();
+  if(!state.game || !state.task) return draftQueue;
+  const payload={ files:allFiles(), baseline:[...state.base].map(([path,content])=>({path,content})), samples:structuredClone(state.samples), conflict:state.conflict };
+  const game=state.game;
+  draftQueue=draftQueue.catch(()=>{}).then(async()=>{
+    try { await request('draft',{...payload,game}); draftError=false; }
+    catch(e){draftError=true; throw e;}
+    finally{updateButtons();}
+  });
+  return draftQueue;
+}
+
+async function operation(action, payload={}) {
+  if(state.busy)return;
+  error(); state.busy=true; updateButtons(); $('operation-status').textContent=({save:'正在保存',submit:'正在评测',run:'正在编译运行',result:'正在获取结果',refresh:'正在更新题目',enter:'正在进入实训'})[action]??'正在处理';
+  try {
+    await flushDraft();
+    const sent=allFiles();
+    const result=await request(action,{...payload,files:sent,entry:$('files').value,samples:structuredClone(state.samples)});
+    if(action==='save'||action==='submit') { for(const file of sent) state.base.set(file.path,file.content); await flushDraft(); notice(action==='save'?'代码已保存到头歌':'本次评测已结束'); }
+    if(result?.evaluation) showEvaluation(result.evaluation);
+    if(result?.can_submit != null && state.task) state.task.can_submit=result.can_submit;
+    if(action==='run') showLocal(result);
+  } catch(e) { if(state.task && (e.message.includes('结果未知') || e.message.includes('仍在进行')))state.task.can_submit=false; error(e.message); }
+  finally {state.busy=false;$('operation-status').textContent='';updateButtons();}
+}
+
+function showEvaluation(evaluation) {
+  const status=({0:'未开始',1:'评测中',2:'通过',3:'未通过'})[evaluation.status]??`状态 ${evaluation.status}`;
+  $('remote-status').textContent=status; $('remote-status').className=evaluation.status===2?'passed':evaluation.status===3?'failed':'';
+  $('compile-output').textContent=evaluation.compile_output??'';
+  $('test-cases').replaceChildren(...evaluation.tests.map(test=>{
+    const item=document.createElement('details');item.className='test-case';
+    const heading=document.createElement('summary'); heading.textContent=`${test.name} · ${test.public?'公开':'隐藏'} · ${test.passed===true?'通过':test.passed===false?'未通过':'尚无结果'}`;item.append(heading);
+    for(const [label,text] of [['输入',test.public?test.input:null],['预期输出',test.public?test.expected:null],['实际输出',test.actual]]){
+      if(text==null)continue; const title=document.createElement('div');title.className='muted';title.textContent=label;const pre=document.createElement('pre');pre.textContent=text;item.append(title,pre);
+    }
+    if(!test.public){const p=document.createElement('p');p.className='muted';p.textContent='隐藏测试的输入和预期输出由平台保密。';item.append(p);}
+    return item;
+  }));
+}
+function showLocal(result) {
+  const target=$('local-results');target.replaceChildren();
+  const append=(title,text,cls='')=>{const heading=document.createElement('div');heading.textContent=title;heading.className=cls;const pre=document.createElement('pre');pre.textContent=text;target.append(heading,pre);};
+  if(result.compilation){const c=result.compilation;append(c.timed_out?'编译超时':c.exit_code===0?'编译成功':'编译失败',c.stdout+c.stderr,c.exit_code===0?'passed':'failed');}
+  for(const sample of result.samples??[]){const o=sample.output;append(`${sample.name} · ${o.timed_out?'运行超时':sample.passed===true?'通过':sample.passed===false?'未通过':'已运行'} · ${o.elapsed_ms} ms`, `stdout:\n${o.stdout}\n${o.stderr?'stderr:\n'+o.stderr:''}${o.truncated?'\n输出已达到大小上限。':''}`, sample.passed===true?'passed':sample.passed===false||o.timed_out?'failed':'');}
+  setTab('local');
+}
+function setTab(tab){activeTab=tab; $('local-tab').hidden=tab!=='local';$('remote-tab').hidden=tab!=='remote';document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));}
+
+function receive(message) {
+  if(message.reply_to){const callback=pending.get(message.reply_to);if(!callback)return;clearTimeout(callback.timer);pending.delete(message.reply_to);message.ok?callback.resolve(message.data):callback.reject(new Error(message.error??'操作失败'));return;}
+  switch(message.type){
+    case 'theme': document.documentElement.dataset.theme=message.dark?'dark':'light'; document.documentElement.style.setProperty('--accent',message.accent);monaco.editor.setTheme(message.dark?'vs-dark':'vs');break;
+    case 'connection': state.connected=message.connected;$('connection').textContent=message.connected?'● 已连接头歌':'● 未连接';$('connection').className=`connection ${message.connected?'online':'offline'}`;updateButtons();break;
+    case 'homework':
+      $('homework-title').textContent=message.title;
+      options($('games'),message.games.map(g=>({value:g.identifier,text:`第 ${g.position} 关 · ${g.name}`})),message.game);
+      $('enter-panel').hidden=!message.can_enter;
+      if(message.can_enter){state.task=null;state.game='';state.files=[];editor.setModel(null);$('description').textContent='点击“进入实训”后可读取题目和代码。';updateButtons();}
+      break;
+    case 'task': {
+      const task=message.task; const previous=state.game; state.game=task.game_identifier;state.task=task;
+      const drafts=new Map((message.drafts??[]).map(f=>[f.path,f.content]));
+      state.conflict=message.conflict??false;
+      state.files=message.files;
+      for(const file of state.files){const key=`${state.game}:${file.path}`;const model=models.get(key);const oldBase=state.base.get(file.path);const preserve=previous===state.game && model && model.getValue()!==oldBase && !message.force;
+        if(preserve && oldBase!==file.content)state.conflict=true;
+        const content=message.force?file.content:(drafts.get(file.path)??file.content);
+        if(model&&!preserve&&model.getValue()!==content)model.setValue(content);file.editor_content=content;
+      }
+      state.base=new Map(message.files.map(f=>[f.path,f.content]));
+      $('description').innerHTML=DOMPurify.sanitize(marked.parse(task.description_markdown??''),{FORBID_TAGS:['iframe','form','input','button','style'],FORBID_ATTR:['style']});
+      options($('files'),state.files.map(f=>({value:f.path,text:f.path})),message.entry??state.files[0]?.path);
+      for(const file of state.files){const key=`${state.game}:${file.path}`;if(!models.has(key))models.set(key,monaco.editor.createModel(file.editor_content,language(file.path),monaco.Uri.parse(`inmemory://educoder/${encodeURIComponent(state.game)}/${encodeURIComponent(file.path)}`)));}
+      if(state.files.length)selectFile($('files').value);else{editor.setModel(null);editor.updateOptions({readOnly:true});}
+      state.samples=message.samples?.length?message.samples:message.evaluation.tests.filter(t=>t.public&&t.input!=null).map((t,i)=>({name:`样例 ${i+1}`,input:t.input,expected:t.expected}));
+      if(!state.samples.length)state.samples=[{name:'自定义样例 1',input:'',expected:null}];state.sampleIndex=0;showSamples();showEvaluation(message.evaluation);updateButtons();notice(message.cached?'已显示缓存题目和本地草稿。':'');break;
+    }
+    case 'notice': notice(message.message);break;
+    case 'error': error(message.message);break;
+    case 'before-close': flushDraft().then(()=>notify('close-ready')).catch(e=>error(e.message));break;
+    case 'before-logout': flushDraft().then(()=>notify('logout-ready')).catch(e=>error(e.message));break;
+    case 'navigate': if(state.busy){error('请等待当前操作完成后再切换。');break;} flushDraft().then(()=>notify('navigate',message.target)).catch(e=>error(e.message));break;
+    case 'clear': clearTimeout(draftTimer);state.game='';state.task=null;state.files=[];state.base.clear();editor.setModel(null);models.forEach(m=>m.dispose());models.clear();$('description').textContent='请选择作业。';$('local-results').replaceChildren();$('test-cases').replaceChildren();updateButtons();break;
+  }
+}
+
+$('files').onchange=()=>selectFile($('files').value);
+$('games').onchange=async()=>{const game=$('games').value;try{await flushDraft();notify('select-game',{game});}catch(e){error(e.message);$('games').value=state.game;}};
+$('back').onclick=()=>flushDraft().then(()=>notify('navigate',{page:'homeworks'})).catch(e=>error(e.message));
+$('settings').onclick=()=>notify('settings');
+for(const action of ['save','submit','run'])$(action).onclick=()=>operation(action);
+$('refresh-result').onclick=()=>operation('result').then(()=>setTab('remote'));
+$('refresh-task').onclick=()=>operation('refresh');
+$('enter').onclick=()=>operation('enter');
+$('keep-draft').onclick=async()=>{try{await flushDraft();await request('resolve-conflict');state.conflict=false;updateButtons();}catch(e){error(e.message);}};
+$('discard-draft').onclick=()=>request('discard-draft').catch(e=>error(e.message));
+document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>setTab(button.dataset.tab));
+$('samples').onchange=()=>{storeSample();state.sampleIndex=Number($('samples').value);showSamples();};
+$('add-sample').onclick=()=>{storeSample();if(state.samples.length>=100)return;state.samples.push({name:`自定义样例 ${state.samples.length+1}`,input:'',expected:null});state.sampleIndex=state.samples.length-1;showSamples();};
+$('remove-sample').onclick=()=>{if(state.samples.length<=1)return;state.samples.splice(state.sampleIndex,1);state.sampleIndex=Math.min(state.sampleIndex,state.samples.length-1);showSamples();};
+for(const id of ['stdin','expected'])$(id).oninput=()=>{clearTimeout(draftTimer);draftTimer=setTimeout(()=>flushDraft().catch(e=>error(e.message)),500);};
+$('description').addEventListener('click',event=>{if(event.target.closest('a')){event.preventDefault();notice('链接可通过右键复制，在浏览器中打开。');}});
+const splitter=$('splitter');splitter.onpointerdown=event=>{splitter.setPointerCapture(event.pointerId);splitter.onpointermove=e=>{const percent=Math.max(25,Math.min(65,e.clientX/window.innerWidth*100));document.documentElement.style.setProperty('--problem-width',`${percent}%`);};};splitter.onpointerup=()=>{splitter.onpointermove=null;};
+splitter.onkeydown=event=>{if(!['ArrowLeft','ArrowRight'].includes(event.key))return;const width=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--problem-width'))||40;document.documentElement.style.setProperty('--problem-width',`${Math.max(25,Math.min(65,width+(event.key==='ArrowRight'?2:-2)))}%`);};
+window.educoder={receive,editor,flushDraft};updateButtons();notify('ready');

@@ -21,8 +21,16 @@ pub enum Error {
     Response(&'static str),
     #[error("参数无效：{0}")]
     InvalidInput(&'static str),
-    #[error("读取 Cookie 文件失败")]
+    #[error("本地文件操作失败")]
     Io(#[source] std::io::Error),
+    #[error("本地执行失败：{0}")]
+    Execution(String),
+    #[error("评测仍在进行，请稍后刷新结果；请勿重复提交")]
+    EvaluationPending,
+    #[error("保存或提交结果未知，请先刷新远端状态后再操作")]
+    WriteUncertain,
+    #[error("远端代码已变化，本地草稿已保留；请刷新题目并处理冲突后保存")]
+    Conflict,
     #[error("系统凭据存储不可用或操作失败")]
     Vault,
     #[error("当前平台尚未接入持久化凭据存储")]

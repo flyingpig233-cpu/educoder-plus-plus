@@ -1,0 +1,21 @@
+{
+  "name": "educoder-workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "playwright test"
+  },
+  "dependencies": {
+    "dompurify": "3.4.17",
+    "marked": "18.1.1",
+    "monaco-editor": "0.57.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "esbuild": "0.28.2"
+  },
+  "overrides": {
+    "dompurify": "$dompurify"
+  }
+}

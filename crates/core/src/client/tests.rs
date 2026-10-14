@@ -50,11 +50,12 @@ impl Match for Signed {
             .headers
             .get("x-edu-signature")
             .and_then(|v| v.to_str().ok());
-        timestamp.is_some_and(|t| signature == Some(signing::signature("GET", t).as_str()))
-            && request
-                .headers
-                .get("pc-authorization")
-                .is_some_and(|v| v == "test-session")
+        timestamp.is_some_and(|t| {
+            signature == Some(signing::signature(request.method.as_str(), t).as_str())
+        }) && request
+            .headers
+            .get("pc-authorization")
+            .is_some_and(|v| v == "test-session")
             && request
                 .headers
                 .get("cookie")
@@ -330,4 +331,134 @@ async fn calibrates_clock_once_and_spaces_concurrent_requests() {
             .count(),
         1
     );
+}
+
+fn task_fixture(status: i32) -> Value {
+    json!({"challenge":{"id":31,"subject":"Demo","position":1,"task_pass":"# Demo","path":"main.rs;helper.rs"},
+        "game":{"id":71,"status":status,"user_id":21},"user":{"user_id":21},"myshixun":{"identifier":"instance"},
+        "shixun_environments":[{"shixun_environment_id":11,"tab_type":1}],"homework_common_id":9,"evaluate_count":4,
+        "test_sets":[{"name":"public","is_public":true,"input":"1 2","output":"3","actual_output":"3","result":true},
+            {"name":"private","is_public":false,"input":"never disclose","output":"never disclose","actual_output":null,"result":null}],"last_compile_output":"compile successfully"})
+}
+
+#[tokio::test]
+async fn save_all_files_then_submit_once_with_signed_post_and_private_tests_redacted() {
+    use wiremock::matchers::body_partial_json;
+    let (server, client) = client().await;
+    Mock::given(path("/api/tasks/g1.json"))
+        .and(query_param("homework_common_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(task_fixture(0)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let task = client.get_task_details("g1", 9).await.unwrap();
+    assert!(task.submission.is_some());
+    assert_eq!(task.evaluation.tests[0].input.as_deref(), Some("1 2"));
+    assert!(
+        task.evaluation.tests[1].input.is_none() && task.evaluation.tests[1].expected.is_none()
+    );
+    for (path_name, evaluate, key) in [
+        ("main.rs", 0, Value::Null),
+        ("helper.rs", 1, json!("temporary-key")),
+    ] {
+        Mock::given(method("POST")).and(path("/api/myshixuns/instance/update_file.json")).and(Signed)
+            .and(body_partial_json(json!({"path":path_name,"evaluate":evaluate,"game_id":71,"homework_common_id":9,"extras":{"challenge_id":31,"currentUserId":21}})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"content":{"commitID":"commit"},"sec_key":key,"resubmit":"","content_modified":0}))).expect(1).mount(&server).await;
+    }
+    Mock::given(method("POST")).and(path("/api/tasks/g1/game_build.json")).and(Signed)
+        .and(body_partial_json(json!({"sec_key":"temporary-key","shixun_environment_id":11,"first":1,"extras":{"commitID":"commit","homework_common_id":9}})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status":1}))).expect(1).mount(&server).await;
+    client
+        .submit_code(
+            &task,
+            &[
+                CodeFile {
+                    path: "main.rs".into(),
+                    content: b"fn main() {}".to_vec(),
+                },
+                CodeFile {
+                    path: "helper.rs".into(),
+                    content: b"// helper".to_vec(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn invalid_batch_cannot_partially_save_and_old_pass_cannot_complete_new_evaluation() {
+    let (server, client) = client().await;
+    let task = serde_json::from_value::<TaskDetailsDto>(task_fixture(2))
+        .unwrap()
+        .into_details("g1", 9);
+    let files = [
+        CodeFile {
+            path: "main.rs".into(),
+            content: vec![],
+        },
+        CodeFile {
+            path: "outside.rs".into(),
+            content: vec![],
+        },
+    ];
+    assert!(matches!(
+        client.save_files(&task, &files, false).await,
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(server.received_requests().await.unwrap().is_empty());
+    Mock::given(path("/api/tasks/g1.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(task_fixture(2)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        client
+            .wait_for_evaluation(&task, Duration::from_millis(2100))
+            .await,
+        Err(Error::EvaluationPending)
+    ));
+}
+
+#[tokio::test]
+async fn ambiguous_write_is_not_retried_and_security_receipt_debug_is_redacted() {
+    let (server, mut client) = client().await;
+    Arc::get_mut(&mut client.inner).unwrap().http = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_millis(80))
+        .retry(reqwest::retry::never())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let task = serde_json::from_value::<TaskDetailsDto>(task_fixture(0))
+        .unwrap()
+        .into_details("g1", 9);
+    Mock::given(method("POST"))
+        .and(path("/api/myshixuns/instance/update_file.json"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(1))
+                .set_body_json(json!({"content":{"commitID":"x"},"sec_key":"secret"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        client
+            .save_files(
+                &task,
+                &[CodeFile {
+                    path: "main.rs".into(),
+                    content: vec![]
+                }],
+                true
+            )
+            .await,
+        Err(Error::WriteUncertain)
+    ));
+    let receipt =
+        serde_json::from_value::<SaveDto>(json!({"content":{"commitID":"x"},"sec_key":"secret"}))
+            .unwrap()
+            .into_receipt();
+    assert!(!format!("{receipt:?}").contains("secret"));
 }

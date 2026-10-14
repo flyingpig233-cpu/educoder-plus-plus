@@ -95,6 +95,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let games = client.get_my_challenges(instance).await?;
     println!("PASS: existing instance games; returned={}", games.len());
     if let Some(game) = games.first() {
+        let details = client
+            .get_task_details(&game.identifier, homework.id)
+            .await?;
+        println!(
+            "PASS: task evaluation details; tests={}; public={}; submission_context={}",
+            details.evaluation.tests.len(),
+            details.evaluation.tests.iter().filter(|t| t.public).count(),
+            details.submission.is_some()
+        );
         let snapshot = client.get_task_snapshot(&game.identifier).await?;
         println!(
             "PASS: task snapshot; description_bytes={}; files={}; code_bytes={}",

@@ -39,6 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.show()?;
     snapshot(&app, "welcome-dark")?;
     app.set_connected(true);
+    app.set_has_session(true);
     app.set_user_name("预览账号 · 示例数据".into());
     app.set_course_title("Rust 程序设计".into());
     app.set_selected_course_id("1".into());
@@ -63,21 +64,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ])));
     app.set_homeworks(ModelRc::new(VecModel::from(vec![
         HomeworkRow {
+            id: "1001".into(),
             title: "01 · 从 Hello World 开始".into(),
             subtitle: "作业 #1001  ·  实训 rust_intro".into(),
             badge: "实训作业".into(),
         },
         HomeworkRow {
+            id: "1002".into(),
             title: "02 · 所有权、借用与生命周期".into(),
             subtitle: "作业 #1002  ·  实训 ownership".into(),
             badge: "实训作业".into(),
         },
         HomeworkRow {
+            id: "1003".into(),
             title: "03 · 使用枚举与模式匹配".into(),
             subtitle: "作业 #1003  ·  实训 patterns".into(),
             badge: "实训作业".into(),
         },
         HomeworkRow {
+            id: "1004".into(),
             title: "04 · 集合类型与错误处理：构建一个可复用的命令行工具".into(),
             subtitle: "作业 #1004  ·  实训 collections".into(),
             badge: "实训作业".into(),
@@ -97,6 +102,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.set_error_message("".into());
     app.set_busy(true);
     snapshot(&app, "loading-light")?;
+    app.set_busy(false);
+    app.set_page(1);
+    snapshot(&app, "settings-light")?;
+    app.set_dark_mode(true);
+    snapshot(&app, "settings-dark")?;
     println!("Previews saved to target/ui-previews/");
     Ok(())
 }

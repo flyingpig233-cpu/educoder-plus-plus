@@ -34,6 +34,12 @@ impl fmt::Debug for Session {
 }
 
 impl Session {
+    /// Opaque session namespace, suitable for isolating cached data and drafts.
+    pub fn cache_namespace(&self) -> Result<String> {
+        let (_, auth) =
+            self.headers_for(&Url::parse("https://data.educoder.net/api/").expect("constant URL"))?;
+        Ok(crate::cache::digest(auth.as_bytes()))
+    }
     /// Import Netscape cookies.txt, including #HttpOnly_ entries.
     /// Unrelated domains and expired cookies are ignored.
     pub fn from_netscape(text: &str) -> Result<Self> {

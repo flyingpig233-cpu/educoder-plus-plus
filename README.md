@@ -2,7 +2,7 @@
 
 Rust 编写的头歌代码工作台。采用 Cargo workspace：`educoder-core` 提供平台抽象和异步数据访问，`educoder-ui` 使用 Slint。
 
-当前实现爬虫核心库、独立诊断示例和课堂作业桌面界面。UI 参考 Codex 的侧栏布局与灰阶配色，支持深色/浅色模式；编辑器尚未实现。
+当前提供课堂作业浏览与代码工作区。Slint 负责无边框标题栏、侧栏和设置；本地 WebView 内嵌离线 Monaco 与 Markdown，采用 Codex 风格灰阶界面，支持深浅主题与强调色。
 
 ## 已实现
 
@@ -16,11 +16,25 @@ Rust 编写的头歌代码工作台。采用 Cargo workspace：`educoder-core` �
 - 桌面界面导入 Cookie 文件、恢复保存的登录会话、退出登录、搜索与刷新课堂、切换实训/图文作业、作业翻页和失败重试。
 - 网络请求在 Tokio 后台执行，通过 Slint 事件循环更新界面；快速切换课堂或作业类型时丢弃旧请求结果。
 
-代码保存、提交与评测状态接口尚未核实，当前没有实现；账号密码登录、代码编辑器和评论系统也尚未实现。接口协议参考 [educoder-helper](https://github.com/alumkal/educoder-helper)，不是官方稳定 API。已完成真实登录会话的只读联调，覆盖课堂、作业分页、已有实训、任务文件与报告读取。
+- 会话隔离的内存/磁盘缓存；已有列表在刷新时保持显示，过期缓存先展示再后台更新，离线仍可查看已缓存内容。
+- Markdown 题目、多文件 Monaco 编辑、语法高亮、查找、折叠、快捷键和自动保存的本地草稿。切换课堂/关卡、返回列表及关闭窗口前等待草稿落盘；远端变化时保留草稿并提示冲突。
+- 本机 C/C++、Rust、Python、JavaScript、Java 样例运行，配置工具链路径、检查环境、查看编译诊断和 stdout/stderr、运行超时及输出比较。
+- 保存到头歌、提交评测、轮询结果及手动刷新，展示平台公开测试集；隐藏测试只展示平台允许返回的结果，不展示或执行隐藏输入。
+- 自绘标题栏支持拖动、双击最大化、最小化和关闭；连接状态绿色/红色，主题与编译环境集中在设置页。
+
+协议参考 [educoder-helper](https://github.com/alumkal/educoder-helper)、[educoder-cli](https://github.com/hecongnan/educoder-cli) 与平台前端请求，不是官方稳定 API。真实会话只读联调已覆盖题目、代码、测试集和提交上下文；保存/提交通过模拟 HTTP 服务验证，未对真实账号执行提交。账号密码登录和评论系统暂未实现。
 
 ## 开发
 
-需要 Rust stable，当前开发环境为 Rust 1.96，依赖版本由 `Cargo.lock` 锁定。
+需要 Rust stable（当前为 1.96）和 Node.js/npm，版本由 Cargo/npm lockfile 锁定。Windows 桌面需要 WebView2 Runtime；本地样例需要安装对应编译器/解释器。桌面集成当前在 Windows 验证；Linux 构建 Wry 还需要系统 WebKitGTK 开发库。
+
+首次构建先安装编辑器依赖：
+
+```powershell
+npm ci --prefix crates/ui/web
+```
+
+Cargo 构建 UI 时自动运行前端构建，JS/CSS/字体/Worker 嵌入可执行文件，启动无需 npm 服务或 CDN。
 
 ```powershell
 cargo fmt --all -- --check
@@ -40,9 +54,12 @@ cargo run -p educoder-ui
 1. 点击「连接头歌账号」，输入从浏览器导出的 Netscape 格式 `cookies.txt` 文件路径，然后点击「导入并连接」。会话验证成功后存入系统凭据库；如果保存失败，界面会提示，本次仍可使用。
 2. 下次启动自动恢复已保存的会话，也支持通过 `EDUCODER_COOKIES` 指定文件。
 3. 侧栏展示课堂并支持搜索和刷新。点击课堂，在主区域查看实训/图文作业，按每页 20 条翻页；总数未知时可翻至空页，再返回上一页。
-4. 左下角切换深色/浅色主题或退出登录。当前版本只浏览作业列表，不提供作业打开、代码编辑或提交按钮。
+4. 点击实训作业打开工作区，选择关卡和文件。若尚无个人实例，点击「进入实训」创建；普通读取不会自动创建实例。图文作业当前仅列出。
+5. 左侧阅读 Markdown，右侧用 Monaco 编辑代码。Ctrl+S 保存本地草稿；「保存到头歌」同步远端；「提交评测」保存代码并提交一次，评测结束显示结果。网络结果不确定时先刷新远端结果再处理，不自动重复提交。
+6. 在「本地测试」编辑输入与预期输出，点击「编译并运行」。缺少环境时到设置中填写 PATH 程序名或绝对路径，检查后保存设置。
+7. 左下角打开设置调整深浅主题、灰/蓝/紫强调色与编译环境，点击「保存设置」持久化；连接指示始终显示绿/红状态。
 
-界面显示真实接口返回的数据，不内置演示课堂。网络请求失败时可重试，登录过期时提示重新导入。课堂列表接口的分页协议仍待核实，若平台明确返回的总数大于已获取数量，界面会提示可能未显示全部课堂。
+界面显示真实接口返回的数据，不内置演示课堂。网络失败时保留已显示的缓存内容，登录过期时提示重新导入。课堂列表接口的分页协议仍待核实，若平台明确返回的总数大于已获取数量，界面会提示可能未显示全部课堂。
 
 开发时可生成使用示例数据的真实 Slint 渲染图，检查两种主题、紧凑窗口、登录和加载状态（不访问平台、不打开桌面窗口）：
 
@@ -51,6 +68,24 @@ cargo run -p educoder-ui --example preview
 ```
 
 预览保存在 `target/ui-previews/`，不会提交到仓库。
+
+## 缓存、草稿与执行规则
+
+数据位于系统用户数据目录（Windows 通常为 `%LOCALAPPDATA%\Educoder\EducoderPlusPlus\data`），不写入源码目录。课程资料、作业分页、关卡和题目使用 10 分钟缓存；手动刷新强制请求。缓存按会话的不可逆摘要隔离，登录凭据仍在系统凭据库；磁盘缓存包含已读取的题目、代码、草稿和结果。设置独立保存。退出登录后不展示原会话内容，原 Cookie 文件不删除。
+
+本地运行将当前文件复制到临时目录，编译输出放在独立目录。编译限时 30 秒，每个样例限时 5 秒，stdout/stderr 各限 1 MiB；超时结束整个子进程组。程序以当前用户权限执行，不提供虚拟机隔离。输出比较统一 CRLF 和末尾换行，其余内容精确比较。
+
+C/C++ 编译当前任务的同语言源文件，Rust 使用 rustc（edition 2024），Java 支持无 package 的单文件入口。暂不自动安装工具链，不自动还原 Cargo/Maven/npm 依赖，也不提供 SQL、容器或平台专用服务环境。平台评测环境与本机可能不同。
+
+验证本机工具链与真实桌面集成（只使用合成数据）：
+
+```powershell
+cargo run -p educoder-core --example local_smoke
+cargo run -p educoder-ui --example native_workspace
+npm test --prefix crates/ui/web
+```
+
+浏览器测试默认使用本机 Edge。真实账号 smoke 工具始终只读。
 
 ## 使用爬虫
 
@@ -131,9 +166,15 @@ crates/core/src/
   signing.rs      平台签名协议
   vault.rs        系统凭据存储
   error.rs        错误分类
+  cache.rs        异步磁盘缓存与会话隔离
+  runner.rs       本地工具链与限时样例运行
 crates/core/examples/crawl.rs  诊断 CLI
 crates/ui/src/controller.rs  后台任务与界面状态协调
-crates/ui/ui/app.slint       深浅主题、课堂与作业界面
+crates/ui/src/workbench.rs   题目、草稿、代码操作与运行协调
+crates/ui/src/webview.rs     离线 WebView 与消息桥接
+crates/ui/src/preferences.rs 设置持久化与编译环境
+crates/ui/ui/app.slint       标题栏、设置、课堂与作业界面
+crates/ui/web/src/           Monaco、Markdown、测试集和结果界面
 crates/ui/examples/preview.rs  离屏渲染预览
 ```
 

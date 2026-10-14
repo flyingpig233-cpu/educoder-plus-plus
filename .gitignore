@@ -5,3 +5,7 @@ cookies*.txt
 .env.*
 *.log
 /exports/
+node_modules/
+crates/ui/web/dist/
+crates/ui/web/test-results/
+crates/ui/web/playwright-report/

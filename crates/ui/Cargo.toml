@@ -7,7 +7,13 @@ repository.workspace = true
 [dependencies]
 educoder-core = { path = "../core" }
 tokio.workspace = true
-slint = { version = "1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2"] }
+serde.workspace = true
+serde_json.workspace = true
+slint = { version = "1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2", "unstable-winit-030"] }
+include_dir = "0.7"
+wry = "0.57"
+# Wry uses newer OffsetDateTime methods not present in time 0.3.5.
+time = "0.3.44"
 
 [build-dependencies]
 slint-build = "1"

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <link rel="stylesheet" href="app.css">
+  <title>题目工作区</title>
+</head>
+<body>
+  <header class="workbar">
+    <button id="back" aria-label="返回作业列表">‹ 返回作业</button>
+    <span id="homework-title">题目工作区</span>
+    <select id="games" aria-label="选择关卡"></select>
+    <span id="connection" class="connection offline">未连接</span>
+  </header>
+  <div id="notice" role="status" hidden></div>
+  <div id="error" role="alert" hidden></div>
+  <div id="conflict" hidden>远端代码已发生变化，你的本地草稿已保留。<button id="keep-draft">保留草稿并继续</button><button id="discard-draft">使用远端版本</button></div>
+  <main id="workspace">
+    <section class="problem-pane">
+      <div class="section-heading">题目描述 <button id="refresh-task">刷新题目</button></div>
+      <article id="description" class="markdown"><p class="muted">选择作业后，在这里阅读题目。</p></article>
+      <div id="enter-panel" hidden><p>此实训尚未创建个人实例。</p><button id="enter">进入实训</button></div>
+    </section>
+    <div id="splitter" role="separator" aria-label="调整题目和编辑器宽度" tabindex="0"></div>
+    <section class="code-pane">
+      <div class="editor-toolbar">
+        <select id="files" aria-label="选择代码文件"></select>
+        <span id="dirty" class="muted">已同步</span>
+        <button id="save">保存到头歌</button>
+        <button id="submit" class="primary">提交评测</button>
+      </div>
+      <div id="editor" aria-label="Monaco 代码编辑器"></div>
+      <section class="results-pane">
+        <nav class="result-tabs">
+          <button data-tab="local" class="selected">本地测试</button>
+          <button data-tab="remote">平台结果与测试集</button>
+          <span id="operation-status" class="muted"></span>
+        </nav>
+        <div id="local-tab" class="tab-content">
+          <div class="sample-toolbar"><select id="samples" aria-label="选择本地样例"></select><button id="add-sample">添加样例</button><button id="remove-sample">删除</button><button id="run" class="primary">编译并运行</button><button id="settings">编译环境设置</button></div>
+          <div class="sample-inputs"><label>标准输入<textarea id="stdin" placeholder="可留空；数据通过 stdin 传入"></textarea></label><label>预期输出（可选）<textarea id="expected" placeholder="留空时仅运行并显示输出"></textarea></label></div>
+          <div id="local-results" class="output" aria-live="polite"><span class="muted">使用本机编译器运行当前代码；运行时限 5 秒。</span></div>
+        </div>
+        <div id="remote-tab" class="tab-content" hidden><div class="sample-toolbar"><span id="remote-status">尚未获取评测结果</span><button id="refresh-result">刷新结果</button></div><pre id="compile-output"></pre><div id="test-cases"></div></div>
+      </section>
+    </section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
