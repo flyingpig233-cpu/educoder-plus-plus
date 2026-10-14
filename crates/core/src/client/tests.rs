@@ -102,7 +102,7 @@ async fn homeworks_use_explicit_pagination_and_kind() {
     let (server, client) = client().await;
     Mock::given(path("/api/courses/7/homework_commons.json"))
         .and(query_param("type", "4")).and(query_param("page", "2")).and(query_param("limit", "20"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"homeworks":[{"id":9,"name":"Demo", "shixun_identifier":"sh1", "myshixun_identifier":"", "student_work_id":0}],"count":21})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"homeworks":[{"homework_id":9,"name":"Demo", "shixun_identifier":"sh1", "myshixun_identifier":"", "student_work_id":0}],"query_total_count":21,"all_count":99})))
         .expect(1).mount(&server).await;
     let page = client
         .get_homeworks(7, HomeworkKind::Shixun, PageRequest { page: 2, limit: 20 })

@@ -76,7 +76,8 @@ impl Session {
             });
         }
         let session = Self { cookies };
-        session.headers_for(&Url::parse("https://www.educoder.net/api/").expect("constant URL"))?;
+        session
+            .headers_for(&Url::parse("https://data.educoder.net/api/").expect("constant URL"))?;
         Ok(session)
     }
 
@@ -100,7 +101,8 @@ impl Session {
             });
         }
         let session = Self { cookies };
-        session.headers_for(&Url::parse("https://www.educoder.net/api/").expect("constant URL"))?;
+        session
+            .headers_for(&Url::parse("https://data.educoder.net/api/").expect("constant URL"))?;
         Ok(session)
     }
 
@@ -160,7 +162,8 @@ impl Session {
         for cookie in &session.cookies {
             validate_pair(&cookie.name, &cookie.value)?;
         }
-        session.headers_for(&Url::parse("https://www.educoder.net/api/").expect("constant URL"))?;
+        session
+            .headers_for(&Url::parse("https://data.educoder.net/api/").expect("constant URL"))?;
         Ok(session)
     }
 }
@@ -230,6 +233,22 @@ mod tests {
         assert_eq!(
             session.headers_for(&url).unwrap(),
             restored.headers_for(&url).unwrap()
+        );
+    }
+
+    #[test]
+    fn api_host_cookies_are_accepted_without_forwarding_website_cookies() {
+        let session = Session::from_netscape("data.educoder.net\tFALSE\t/\tTRUE\t0\t_educoder_session\tapi-session\nwww.educoder.net\tFALSE\t/\tTRUE\t0\twebsite-only\tprivate").unwrap();
+        let (cookie, auth) = session
+            .headers_for(&Url::parse("https://data.educoder.net/api/tasks/g1.json").unwrap())
+            .unwrap();
+        assert_eq!(cookie, "_educoder_session=api-session");
+        assert_eq!(auth, "api-session");
+        assert!(
+            Session::from_netscape(
+                "www.educoder.net\tFALSE\t/\tTRUE\t0\t_educoder_session\twebsite-session"
+            )
+            .is_err()
         );
     }
 }

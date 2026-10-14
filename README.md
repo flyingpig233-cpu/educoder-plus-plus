@@ -16,7 +16,7 @@ Rust 编写的头歌代码工作台。采用 Cargo workspace：`educoder-core` �
 - 桌面界面导入 Cookie 文件、恢复保存的登录会话、退出登录、搜索与刷新课堂、切换实训/图文作业、作业翻页和失败重试。
 - 网络请求在 Tokio 后台执行，通过 Slint 事件循环更新界面；快速切换课堂或作业类型时丢弃旧请求结果。
 
-代码保存、提交与评测状态接口尚未核实，当前没有实现；账号密码登录、代码编辑器和评论系统也尚未实现。接口协议参考 [educoder-helper](https://github.com/alumkal/educoder-helper)，不是官方稳定 API。未使用真实账号进行在线验证。
+代码保存、提交与评测状态接口尚未核实，当前没有实现；账号密码登录、代码编辑器和评论系统也尚未实现。接口协议参考 [educoder-helper](https://github.com/alumkal/educoder-helper)，不是官方稳定 API。已完成真实登录会话的只读联调，覆盖课堂、作业分页、已有实训、任务文件与报告读取。
 
 ## 开发
 
@@ -81,6 +81,19 @@ cargo run -p educoder-core --example crawl -- courses
 `logout` 删除系统凭据库条目，不删除用户原始 Cookie 文件、不撤销浏览器登录；如果仍设置 `EDUCODER_COOKIES`，后续独立进程仍会从该文件读取会话。会话过期后重新导入。
 
 `homeworks` 逐页读取，页码从 1 开始，默认每页 50 条；核心库允许显式指定 1–100 条。课程列表分页协议未核实，当前仅返回该接口的一次响应，不承诺包含全部课程。
+
+## 真实接口只读联调
+
+```powershell
+$env:EDUCODER_COOKIES = "C:\private\cookies.txt"
+cargo run -p educoder-core --example smoke
+```
+
+`smoke` 只输出成功状态、数量和网络错误类别，不打印账号、代码、Cookie 或原始响应，也不保存会话。它抽样检查第一个课堂的实训/图文作业前两页，以及其中一个已有实训的关卡、任务文件和报告；没有相应数据时显示 `SKIP`，不会创建实例或提交作业。这是手动联调工具，常规 `cargo test` 不使用真实账号。
+
+网络较慢时可设置 `$env:EDUCODER_TIMEOUT_SECONDS = "60"` 延长本次联调超时；应用默认仍为 30 秒。
+
+2026-10-14 联调确认 API 位于 `https://data.educoder.net/`，网站来源仍为 `https://www.educoder.net/`。客户端直接访问 API，不依赖跨域重定向。作业模型适配 `homework_id` 和筛选后的 `query_total_count`；报告支持数字或数字字符串分数，未评分保留为缺省值，不转换为零分。
 
 ## 核心库示例
 

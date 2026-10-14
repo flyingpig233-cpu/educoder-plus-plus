@@ -18,6 +18,7 @@ use tokio::{
 use crate::{Error, Result, Session, SessionVault, dto::*, models::*, signing};
 
 const ORIGIN: &str = "https://www.educoder.net/";
+const API_ORIGIN: &str = "https://data.educoder.net/";
 
 #[derive(Debug, Clone)]
 pub struct ClientOptions {
@@ -73,7 +74,7 @@ impl EducoderClient {
         Ok(Self {
             inner: Arc::new(Inner {
                 http,
-                origin: Url::parse(ORIGIN).expect("constant URL"),
+                origin: Url::parse(API_ORIGIN).expect("constant URL"),
                 session: RwLock::new(Some(session)),
                 clock_offset: OnceCell::new(),
                 next_request: Mutex::new(Instant::now()),
@@ -307,7 +308,7 @@ impl EducoderClient {
             .map_err(|_| Error::InvalidInput("接口路径"))?;
         url.query_pairs_mut()
             .extend_pairs(query.iter().map(|(k, v)| (*k, v.as_str())));
-        let logical_url = Url::parse(ORIGIN)
+        let logical_url = Url::parse(API_ORIGIN)
             .expect("constant URL")
             .join(path)
             .map_err(|_| Error::InvalidInput("接口路径"))?;

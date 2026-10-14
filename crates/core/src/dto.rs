@@ -58,6 +58,7 @@ impl From<CoursesDto> for Page<Course> {
 
 #[derive(Deserialize)]
 pub(crate) struct HomeworkDto {
+    #[serde(rename = "homework_id", alias = "id")]
     id: u64,
     name: String,
     shixun_identifier: Option<String>,
@@ -67,6 +68,7 @@ pub(crate) struct HomeworkDto {
 #[derive(Deserialize)]
 pub(crate) struct HomeworksDto {
     homeworks: Vec<HomeworkDto>,
+    #[serde(rename = "query_total_count", alias = "count")]
     count: Option<u64>,
 }
 impl From<HomeworksDto> for Page<Homework> {
@@ -200,6 +202,7 @@ impl FileDto {
 #[derive(Deserialize)]
 struct StageDto {
     name: String,
+    #[serde(default, deserialize_with = "optional_score")]
     game_score: Option<f64>,
     finished_time: Option<String>,
 }
@@ -207,6 +210,7 @@ struct StageDto {
 pub(crate) struct ReportDto {
     homework_name: Option<String>,
     course_name: Option<String>,
+    #[serde(default, deserialize_with = "optional_score")]
     work_score: Option<f64>,
     stage_list: Vec<StageDto>,
 }
@@ -232,4 +236,63 @@ impl From<ReportDto> for WorkReport {
 #[derive(Deserialize)]
 pub(crate) struct EnterDto {
     pub game_identifier: String,
+}
+
+fn optional_score<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Score {
+        Number(f64),
+        Text(String),
+    }
+    let value = match Option::<Score>::deserialize(deserializer)? {
+        None => return Ok(None),
+        Some(Score::Number(value)) => value,
+        Some(Score::Text(text)) => match text.trim() {
+            "" | "--" | "-" => return Ok(None),
+            number => number.parse::<f64>().map_err(|_| {
+                serde::de::Error::custom("expected numeric score or ungraded marker")
+            })?,
+        },
+    };
+    if !value.is_finite() {
+        return Err(serde::de::Error::custom("expected finite score"));
+    }
+    Ok(Some(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn report_scores_accept_platform_strings_and_preserve_ungraded_values() {
+        let report: WorkReport = serde_json::from_value::<ReportDto>(json!({
+            "work_score":"88.5", "stage_list":[
+                {"name":"A", "game_score":"20.0"},
+                {"name":"B", "game_score":"--"},
+                {"name":"C", "game_score":0},
+                {"name":"D", "game_score":null},
+                {"name":"E"}
+            ]
+        }))
+        .unwrap()
+        .into();
+        assert_eq!(report.score, Some(88.5));
+        assert_eq!(
+            report.stages.iter().map(|s| s.score).collect::<Vec<_>>(),
+            vec![Some(20.0), None, Some(0.0), None, None]
+        );
+        for invalid in ["not a score", "NaN", "inf"] {
+            assert!(
+                serde_json::from_value::<ReportDto>(
+                    json!({"work_score": invalid, "stage_list":[]})
+                )
+                .is_err()
+            );
+        }
+    }
 }
