@@ -1,13 +1,299 @@
-import { VerticalBox } from "std-widgets.slint";
+import { ScrollView, Palette } from "std-widgets.slint";
+
+export struct CourseRow { id: string, title: string }
+export struct HomeworkRow { title: string, subtitle: string, badge: string }
+
+export global Theme {
+    in-out property <bool> dark: true;
+    out property <color> canvas: dark ? #1c1c1c : #ffffff;
+    out property <color> sidebar: dark ? #151515 : #f7f7f7;
+    out property <color> surface: dark ? #242424 : #f5f5f5;
+    out property <color> hover: dark ? #2c2c2c : #ebebeb;
+    out property <color> line: dark ? #333333 : #e7e7e7;
+    out property <color> text: dark ? #eeeeee : #202020;
+    out property <color> muted: dark ? #a3a3a3 : #6b6b6b;
+    out property <color> inverse: dark ? #191919 : #ffffff;
+    out property <color> warning: dark ? #f1bda4 : #9b421f;
+}
+
+component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> primary: false;
+    in property <bool> selected: false;
+    callback clicked;
+    min-width: 72px;
+    height: 36px;
+    border-radius: 8px;
+    border-width: focus.has-focus ? 2px : 1px;
+    border-color: focus.has-focus ? Theme.muted : (root.primary ? Theme.text : Theme.line);
+    background: root.primary ? Theme.text : (touch.has-hover || root.selected ? Theme.hover : transparent);
+    opacity: root.enabled ? 1 : 0.4;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    Text {
+        text: root.text; color: root.primary ? Theme.inverse : Theme.text;
+        font-size: 13px; horizontal-alignment: center; vertical-alignment: center;
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled; mouse-cursor: pointer;
+        clicked => { focus.focus(); root.clicked(); }
+    }
+}
+
+component InputField inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    callback edited(string);
+    callback accepted;
+    height: 40px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: input.has-focus ? Theme.muted : Theme.line;
+    background: Theme.surface;
+    Text {
+        x: 12px; width: parent.width - 24px;
+        visible: input.text == "";
+        text: root.placeholder; color: Theme.muted; font-size: 13px;
+        vertical-alignment: center;
+    }
+    input := TextInput {
+        x: 12px; width: parent.width - 24px;
+        text <=> root.text; color: Theme.text;
+        selection-background-color: Theme.hover;
+        selection-foreground-color: Theme.text;
+        font-size: 13px; single-line: true; vertical-alignment: center;
+        edited => { root.edited(self.text); }
+        accepted => { root.accepted(); }
+    }
+}
 
 export component AppWindow inherits Window {
-    title: "Educoder++";
-    width: 900px;
-    height: 600px;
-    VerticalBox {
-        padding: 32px;
-        Text { text: "Educoder++"; font-size: 28px; }
-        Text { text: "头歌代码工作台"; font-size: 18px; }
-        Text { text: "核心库已建立，登录和代码编辑界面待接入。"; }
+    title: "Educoder++ · 课堂作业";
+    preferred-width: 1160px; preferred-height: 760px;
+    min-width: 900px; min-height: 620px;
+    default-font-family: "Microsoft YaHei UI";
+    background: Theme.canvas;
+    in-out property <bool> dark-mode <=> Theme.dark;
+    in-out property <bool> connected: false;
+    in-out property <bool> busy: false;
+    in-out property <bool> login-open: false;
+    in-out property <string> cookie-path;
+    in-out property <string> user-name: "尚未连接头歌";
+    in-out property <string> course-title: "课堂作业";
+    in-out property <string> selected-course-id;
+    in-out property <string> course-query;
+    in-out property <string> notice;
+    in-out property <string> error-message;
+    in-out property <string> page-label: "第 1 页";
+    in-out property <bool> can-previous: false;
+    in-out property <bool> can-next: false;
+    in-out property <bool> has-course: false;
+    in-out property <int> kind: 0;
+    in-out property <[CourseRow]> courses;
+    in-out property <[HomeworkRow]> homeworks;
+    callback import-session(string);
+    callback select-course(string);
+    callback search-courses(string);
+    callback change-kind(int);
+    callback change-page(int);
+    callback refresh;
+    callback refresh-courses;
+    callback retry;
+    callback logout;
+    changed dark-mode => { Palette.color-scheme = root.dark-mode ? ColorScheme.dark : ColorScheme.light; }
+    init => { Palette.color-scheme = ColorScheme.dark; }
+
+    HorizontalLayout {
+        spacing: 0px;
+        Rectangle {
+            width: 258px; background: Theme.sidebar;
+            VerticalLayout {
+                padding: 20px; spacing: 16px;
+                HorizontalLayout {
+                    height: 40px; spacing: 10px;
+                    Rectangle {
+                        width: 32px; height: 32px; border-radius: 9px; background: Theme.text;
+                        Text { text: "E"; font-size: 20px; font-weight: 700; color: Theme.inverse; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                    Text { text: "Educoder++"; font-size: 17px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
+                }
+                ActionButton {
+                    text: root.connected ? "切换登录账号" : "连接头歌账号"; enabled: !root.busy;
+                    clicked => { root.login-open = true; root.cookie-path = ""; root.error-message = ""; }
+                }
+                Rectangle { height: 1px; background: Theme.line; }
+                HorizontalLayout {
+                    height: 36px;
+                    Text { text: "我的课堂"; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+                    ActionButton { text: "刷新课堂"; enabled: root.connected && !root.busy; clicked => { root.refresh-courses(); } }
+                }
+                InputField {
+                    text <=> root.course-query; placeholder: "搜索课堂…";
+                    edited(text) => { root.search-courses(text); }
+                }
+                ScrollView {
+                    vertical-stretch: 1; content-width: self.width;
+                    VerticalLayout {
+                        spacing: 6px;
+                        for course in root.courses: Rectangle {
+                            height: 46px; border-radius: 8px;
+                            border-width: course-focus.has-focus ? 1px : 0px;
+                            border-color: Theme.muted;
+                            background: root.selected-course-id == course.id ? Theme.hover : (course-touch.has-hover ? Theme.surface : transparent);
+                            accessible-role: button; accessible-label: course.title;
+                            accessible-action-default => { if root.connected && !root.login-open { root.select-course(course.id); } }
+                            course-focus := FocusScope {
+                                enabled: root.connected && !root.login-open;
+                                key-pressed(event) => {
+                                    if event.text == " " || event.text == "\n" { root.select-course(course.id); return accept; }
+                                    return reject;
+                                }
+                            }
+                            Text {
+                                x: 12px; width: parent.width - 24px;
+                                text: course.title; color: Theme.text; font-size: 13px;
+                                overflow: elide; vertical-alignment: center;
+                            }
+                            course-touch := TouchArea {
+                                enabled: root.connected && !root.login-open; mouse-cursor: pointer;
+                                clicked => { course-focus.focus(); root.select-course(course.id); }
+                            }
+                        }
+                        if root.courses.length == 0: Text {
+                            text: root.connected ? "没有匹配的课堂" : "连接后显示你的课堂";
+                            color: Theme.muted; font-size: 12px; wrap: word-wrap;
+                        }
+                        Rectangle { vertical-stretch: 1; }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.line; }
+                HorizontalLayout {
+                    height: 36px; spacing: 8px;
+                    ActionButton { text: root.dark-mode ? "☀  浅色" : "☾  深色"; clicked => { root.dark-mode = !root.dark-mode; } }
+                    ActionButton { text: "退出登录"; enabled: root.connected && !root.busy; clicked => { root.logout(); } }
+                }
+                Text { text: root.user-name; color: Theme.muted; font-size: 12px; overflow: elide; height: 22px; vertical-alignment: center; }
+            }
+        }
+        Rectangle { width: 1px; background: Theme.line; }
+        Rectangle {
+            horizontal-stretch: 1; background: Theme.canvas;
+            VerticalLayout {
+                padding: 32px; spacing: 22px;
+                HorizontalLayout {
+                    height: 24px;
+                    Text { text: "工作台   /   我的课堂"; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+                    Text { text: root.busy ? "●  正在加载" : (root.connected ? "●  已连接头歌" : "○  未连接"); color: Theme.muted; font-size: 12px; horizontal-alignment: right; vertical-alignment: center; }
+                }
+                HorizontalLayout {
+                    height: 66px; spacing: 20px;
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text { text: root.course-title; font-size: 26px; font-weight: 600; color: Theme.text; overflow: elide; }
+                        Text { text: root.has-course ? "在这里查看课堂布置的作业。" : "把课堂和作业集中在一个安静的工作空间。"; font-size: 13px; color: Theme.muted; }
+                    }
+                    ActionButton { width: 84px; text: "↻  刷新"; enabled: root.connected && !root.busy; clicked => { root.refresh(); } }
+                }
+                HorizontalLayout {
+                    height: 36px; spacing: 8px;
+                    ActionButton { text: "实训作业"; selected: root.kind == 0; enabled: root.has-course; clicked => { root.change-kind(0); } }
+                    ActionButton { text: "图文作业"; selected: root.kind == 1; enabled: root.has-course; clicked => { root.change-kind(1); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text { text: root.homeworks.length + " 项作业"; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+                }
+                if root.notice != "": Text { text: root.notice; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
+                if root.error-message != "": Rectangle {
+                    min-height: 66px; border-radius: 10px; background: Theme.surface;
+                    HorizontalLayout {
+                        padding: 14px; spacing: 12px;
+                        Text { text: root.error-message; color: Theme.warning; font-size: 13px; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+                        ActionButton { text: "重试"; enabled: !root.busy; clicked => { root.retry(); } }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.line; }
+                ScrollView {
+                    visible: root.homeworks.length > 0 && !root.busy;
+                    vertical-stretch: 1; content-width: self.width;
+                    VerticalLayout {
+                        spacing: 10px;
+                        for homework in root.homeworks: Rectangle {
+                            height: 96px; border-radius: 12px; border-width: 1px; border-color: Theme.line; background: Theme.canvas;
+                            HorizontalLayout {
+                                padding: 18px; spacing: 16px;
+                                Rectangle {
+                                    width: 36px; height: 36px; border-radius: 9px; background: Theme.surface;
+                                    Text { text: root.kind == 0 ? "</>" : "≡"; color: Theme.muted; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                                VerticalLayout {
+                                    spacing: 7px; horizontal-stretch: 1;
+                                    Text { text: homework.title; font-size: 14px; font-weight: 500; color: Theme.text; overflow: elide; vertical-alignment: center; }
+                                    Text { text: homework.subtitle; font-size: 12px; color: Theme.muted; overflow: elide; }
+                                }
+                                Rectangle {
+                                    width: 76px; height: 26px; border-radius: 6px; background: Theme.surface;
+                                    Text { text: homework.badge; color: Theme.muted; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                        Rectangle { vertical-stretch: 1; }
+                    }
+                }
+                if root.homeworks.length == 0 || root.busy: Rectangle {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        alignment: center; spacing: 16px;
+                        Text { text: root.busy ? "···" : (root.connected ? "▤" : "E"); color: Theme.muted; font-size: 40px; horizontal-alignment: center; }
+                        Text { text: root.busy ? "正在获取课堂数据" : (!root.connected ? "从你的课堂开始" : (root.error-message != "" ? "暂时无法显示作业" : (root.has-course ? "这一页还没有作业" : "选择一个课堂"))); color: Theme.text; font-size: 20px; font-weight: 500; horizontal-alignment: center; }
+                        Text { text: root.busy ? "加载完成后，作业会显示在这里。" : (!root.connected ? "导入登录文件，即可浏览课堂和作业。" : "可以切换课堂、作业类型或刷新列表。"); color: Theme.muted; font-size: 13px; horizontal-alignment: center; }
+                        if !root.connected && !root.busy: HorizontalLayout {
+                            alignment: center;
+                            ActionButton { width: 146px; text: "连接头歌账号"; primary: true; clicked => { root.login-open = true; root.error-message = ""; } }
+                        }
+                    }
+                }
+                if root.has-course: HorizontalLayout {
+                    height: 36px; spacing: 8px;
+                    Text { text: root.page-label; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+                    Rectangle { horizontal-stretch: 1; }
+                    ActionButton { text: "上一页"; enabled: root.can-previous && !root.busy; clicked => { root.change-page(-1); } }
+                    ActionButton { text: "下一页"; enabled: root.can-next && !root.busy; clicked => { root.change-page(1); } }
+                }
+            }
+        }
+    }
+
+    if root.login-open: Rectangle {
+        background: #00000088;
+        TouchArea { }
+        Rectangle {
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            width: 520px; height: 330px;
+            border-radius: 16px; background: Theme.canvas; border-width: 1px; border-color: Theme.line;
+            VerticalLayout {
+                padding: 28px; spacing: 18px;
+                Text { text: "连接你的头歌账号"; color: Theme.text; font-size: 22px; font-weight: 600; }
+                Text { text: "在浏览器登录头歌后，导出 cookies.txt，\n然后在下方填入文件路径。"; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                InputField {
+                    text <=> root.cookie-path; placeholder: "例如 C:\\private\\cookies.txt";
+                    accepted => { if !root.busy && root.cookie-path != "" { root.import-session(root.cookie-path); } }
+                }
+                Text { text: "登录成功后，会话将保存在系统凭据库中。"; color: Theme.muted; font-size: 12px; }
+                if root.error-message != "": Text { text: root.error-message; color: Theme.warning; font-size: 12px; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 10px; alignment: end;
+                    ActionButton { text: "取消"; enabled: !root.busy; clicked => { root.login-open = false; root.cookie-path = ""; } }
+                    ActionButton { width: 130px; text: root.busy ? "正在连接…" : "导入并连接"; primary: true; enabled: !root.busy && root.cookie-path != ""; clicked => { root.import-session(root.cookie-path); } }
+                }
+            }
+        }
     }
 }
