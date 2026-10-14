@@ -1,0 +1,7 @@
+/target/
+cookies*.txt
+!cookies.txt.example
+.env
+.env.*
+*.log
+/exports/

@@ -1,0 +1,12 @@
+[package]
+name = "educoder-ui"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+educoder-core = { path = "../core" }
+slint = { version = "1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2"] }
+
+[build-dependencies]
+slint-build = "1"
