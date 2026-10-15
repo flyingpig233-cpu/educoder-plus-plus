@@ -10,6 +10,19 @@ pub struct WindowChrome {
     _timer: Timer,
 }
 
+/// Select before creating any Slint window. Winit's transparent Windows mode
+/// enables DWM blur, which can expose zero-alpha pixels from software surfaces.
+pub fn initialize_backend() -> Result<(), slint::PlatformError> {
+    slint::BackendSelector::new()
+        .backend_name("winit".into())
+        .with_winit_window_attributes_hook(|attributes| {
+            #[cfg(windows)]
+            let attributes = attributes.with_transparent(false);
+            attributes
+        })
+        .select()
+}
+
 impl WindowChrome {
     pub fn attach(app: &AppWindow) -> Self {
         let weak = app.as_weak();

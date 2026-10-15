@@ -109,7 +109,9 @@ export component AppWindow inherits Window {
     preferred-width: 1160px; preferred-height: 760px;
     min-width: 900px; min-height: 620px;
     default-font-family: "Microsoft YaHei UI";
-    background: transparent;
+    // Windows corners are clipped by the native window region. Keeping the
+    // render target opaque avoids missing pixels with the software renderer.
+    background: Theme.canvas;
     in-out property <bool> window-maximized: false;
     in-out property <image> user-avatar;
     in-out property <string> user-login;

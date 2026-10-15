@@ -2,6 +2,7 @@ use educoder_ui::{AppWindow, Controller};
 use slint::ComponentHandle;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    educoder_ui::chrome::initialize_backend()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

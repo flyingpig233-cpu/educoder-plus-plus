@@ -5,6 +5,7 @@ use slint::{ComponentHandle, Timer, TimerMode};
 use std::{cell::Cell, rc::Rc, time::Duration};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    educoder_ui::chrome::initialize_backend()?;
     let runtime = tokio::runtime::Runtime::new()?;
     let app = AppWindow::new()?;
     let _chrome = educoder_ui::chrome::WindowChrome::attach(&app);
