@@ -269,7 +269,8 @@ export component AppWindow inherits Window {
                     accessible-role: button; accessible-label: "打开账号菜单";
                     accessible-action-default => { account-menu.show(); }
                     Image { x: 8px; y: 7px; width: 38px; height: 38px; source: root.user-avatar.width > 0 ? root.user-avatar : @image-url("../assets/avatar-placeholder.svg"); image-fit: cover; }
-                    Text { x: parent.width - 30px; width: 16px; height: parent.height; text: "⌃"; font-size: 16px; color: Theme.muted; vertical-alignment: center; }
+                    Text { x: 58px; width: parent.width - 86px; height: parent.height; text: root.user-name; font-size: 13px; font-weight: 600; color: Theme.text; vertical-alignment: center; overflow: elide; }
+                    Image { x: parent.width - 24px; y: 20px; width: 12px; height: 12px; source: @image-url("../assets/chevron-up.svg"); colorize: Theme.muted; }
                     avatar-focus := FocusScope {
                         key-pressed(e) => { if e.text == " " || e.text == "\n" { account-menu.show(); return accept; } return reject; }
                     }
@@ -461,7 +462,10 @@ export component AppWindow inherits Window {
                 padding: 10px; spacing: 6px;
                 HorizontalLayout {
                     height: 52px; spacing: 10px; padding-left: 8px;
-                    Image { width: 32px; height: 32px; source: root.user-avatar.width > 0 ? root.user-avatar : @image-url("../assets/avatar-placeholder.svg"); image-fit: cover; }
+                    Rectangle {
+                        width: 38px; height: 52px;
+                        Image { y: 7px; width: 38px; height: 38px; source: root.user-avatar.width > 0 ? root.user-avatar : @image-url("../assets/avatar-placeholder.svg"); image-fit: cover; }
+                    }
                     VerticalLayout {
                         spacing: 3px; alignment: center;
                         Text { text: root.user-name; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }

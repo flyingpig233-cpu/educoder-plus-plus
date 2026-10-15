@@ -1,5 +1,8 @@
 //! Exercises the actual Slint + WebView2 child, offline Monaco and native IPC.
 //! Synthetic data only; no session is restored and no platform is contacted.
+#[cfg(windows)]
+#[path = "support/native_capture.rs"]
+mod native_capture;
 use educoder_ui::{AppWindow, Controller, webview::WebHost};
 use slint::{ComponentHandle, Timer, TimerMode};
 use std::{cell::Cell, rc::Rc, time::Duration};
@@ -144,7 +147,7 @@ fn capture_title_bar(app: &AppWindow, name: &str) {
         WinitWindowAccessor,
         winit::raw_window_handle::{HasWindowHandle, RawWindowHandle},
     };
-    use windows_sys::Win32::{Graphics::Gdi::*, UI::WindowsAndMessaging::*};
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
     app.window().with_winit_window(|window| {
         let RawWindowHandle::Win32(handle) = window.window_handle().unwrap().as_raw() else {
             return;
@@ -167,41 +170,7 @@ fn capture_title_bar(app: &AppWindow, name: &str) {
             SendMessageW(hwnd, WM_NCPAINT, 1, 0);
             SendMessageW(hwnd, WM_NCACTIVATE, 0, 0);
             SendMessageW(hwnd, WM_NCACTIVATE, 1, 0);
-            let dc = GetWindowDC(hwnd);
-            let memory = CreateCompatibleDC(dc);
-            let bitmap = CreateCompatibleBitmap(dc, width as i32, height as i32);
-            let previous = SelectObject(memory, bitmap);
-            assert_ne!(
-                BitBlt(memory, 0, 0, width as i32, height as i32, dc, 0, 0, SRCCOPY),
-                0
-            );
-            SelectObject(memory, previous);
-            let mut info: BITMAPINFO = std::mem::zeroed();
-            info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
-            info.bmiHeader.biWidth = width as i32;
-            info.bmiHeader.biHeight = -(height as i32);
-            info.bmiHeader.biPlanes = 1;
-            info.bmiHeader.biBitCount = 32;
-            let mut pixels = vec![0u8; (width * height * 4) as usize];
-            assert_ne!(
-                GetDIBits(
-                    memory,
-                    bitmap,
-                    0,
-                    height,
-                    pixels.as_mut_ptr().cast(),
-                    &mut info,
-                    DIB_RGB_COLORS
-                ),
-                0
-            );
-            DeleteObject(bitmap);
-            DeleteDC(memory);
-            ReleaseDC(hwnd, dc);
-            for pixel in pixels.chunks_exact_mut(4) {
-                pixel.swap(0, 2);
-                pixel[3] = 255;
-            }
+            let pixels = native_capture::pixels(window, height);
             std::fs::create_dir_all("target/ui-previews").unwrap();
             image::save_buffer(
                 format!("target/ui-previews/{name}.png"),

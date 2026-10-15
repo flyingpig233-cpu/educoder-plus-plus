@@ -21,7 +21,7 @@ Rust 编写的头歌代码工作台。采用 Cargo workspace：`educoder-core` �
 - 本机 C/C++、Rust、Python、JavaScript、Java 样例运行，配置工具链路径、检查环境、查看编译诊断和 stdout/stderr、运行超时及输出比较。
 - 保存到头歌、提交评测、轮询结果及手动刷新，展示平台公开测试集；隐藏测试只展示平台允许返回的结果，不展示或执行隐藏输入。
 - 自绘标题栏支持拖动、双击最大化、最小化和关闭，右上角按钮无边框，关闭按钮悬停红色；窗口采用圆角，Windows 最大化时取消圆角，还原后恢复。连接状态绿色/红色，主题与编译环境集中在设置页。
-- 左下角显示头歌真实头像，点击展开姓名、账号、设置、连接/切换账号和退出登录菜单；点击菜单外或按 Escape 收起。头像异步加载并按会话缓存 7 天，加载失败使用默认头像。
+- 左下角显示头歌真实头像和姓名，点击展开姓名、账号、设置、连接/切换账号和退出登录菜单；菜单头像与用户信息居中对齐，点击菜单外或按 Escape 收起。头像异步加载并按会话缓存 7 天，加载失败使用默认头像。
 
 协议参考 [educoder-helper](https://github.com/alumkal/educoder-helper)、[educoder-cli](https://github.com/hecongnan/educoder-cli) 与平台前端请求，不是官方稳定 API。真实会话只读联调已覆盖题目、代码、测试集和提交上下文；保存/提交通过模拟 HTTP 服务验证，未对真实账号执行提交。账号密码登录和评论系统暂未实现。
 
@@ -83,12 +83,15 @@ C/C++ 编译当前任务的同语言源文件，Rust 使用 rustc（edition 2024
 ```powershell
 cargo run -p educoder-core --example local_smoke
 cargo run -p educoder-ui --example native_workspace
+cargo run -p educoder-ui --example navigation
 npm test --prefix crates/ui/web
 ```
 
 浏览器测试默认使用本机 Edge。真实账号 smoke 工具始终只读。
 
 `native_workspace` 还会触发 Windows 非客户区重绘，检查真实窗口的标题栏像素和原生样式，覆盖最大化、还原及深浅主题，防止系统标题栏重新盖住自定义界面；截图保存在 `target/ui-previews/titlebar-native-*.png`。
+
+`navigation` 使用合成数据连续三次进入编辑器并通过返回按钮回到作业列表，比较原生窗口像素并验证编辑内容保留。页面切换和 WebView 显隐时会完整重绘 Slint 表面，避免子窗口遮挡造成的旧页面残留；该适配使用 Slint 的内部绘制区域接口，UI 的运行库和构建器固定为 1.18.1，升级时需一起复核。
 
 ## 使用爬虫
 

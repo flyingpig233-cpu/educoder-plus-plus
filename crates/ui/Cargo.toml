@@ -9,7 +9,8 @@ educoder-core = { path = "../core" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-slint = { version = "1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2", "unstable-winit-030"] }
+# rendering.rs uses the matching damage-region API for native child occlusion.
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-2", "unstable-winit-030"] }
 include_dir = "0.7"
 wry = "0.57"
 # Wry uses newer OffsetDateTime methods not present in time 0.3.5.
@@ -20,4 +21,4 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Shell"] }
 
 [build-dependencies]
-slint-build = "1"
+slint-build = "=1.18.1"

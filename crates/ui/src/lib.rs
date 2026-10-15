@@ -2,6 +2,7 @@ mod avatar;
 pub mod chrome;
 mod controller;
 mod preferences;
+mod rendering;
 pub mod webview;
 mod workbench;
 

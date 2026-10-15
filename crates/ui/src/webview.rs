@@ -35,8 +35,13 @@ impl WebHost {
         let mut last_theme = None;
         let mut last_connection = None;
         let mut last_visible = false;
+        let mut last_page = None;
         timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
             let Some(app) = ui.upgrade() else { return };
+            if last_page != Some(app.get_page()) {
+                last_page = Some(app.get_page());
+                crate::rendering::repaint_all(&app);
+            }
             let visible = app.get_page() == 2 && !app.get_login_open();
             if visible && target.borrow().is_none() && !failed.get() {
                 let ipc_ui = ui.clone();
@@ -114,9 +119,9 @@ impl WebHost {
                 });
                 last_bounds = Some(bounds);
             }
-            if visible != last_visible {
-                let _ = webview.set_visible(visible);
+            if visible != last_visible && webview.set_visible(visible).is_ok() {
                 last_visible = visible;
+                crate::rendering::repaint_all(&app);
             }
             if !ready.get() {
                 return;
