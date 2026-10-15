@@ -4,9 +4,34 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-const ORIGIN: &str = "https://raw.githubusercontent.com/flyingpig233-cpu/educoder-answer/main/";
+const ORIGIN: &str = "https://gitee.com/flyingpigcpu-233/educoder-answer/raw/main/";
 const TTL: Duration = Duration::from_secs(600);
 const LIMIT: usize = 4 * 1024 * 1024;
+
+// Gitee serves raw files through its signed public-content CDN.
+fn trusted_answer_redirect(url: &Url) -> bool {
+    url.scheme() == "https"
+        && matches!(
+            url.host_str(),
+            Some("gitee.com" | "raw.giteeusercontent.com")
+        )
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url
+            .path()
+            .starts_with("/flyingpigcpu-233/educoder-answer/raw/main/")
+}
+
+fn answer_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() <= 3 && trusted_answer_redirect(attempt.url()) {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AnswerQuery {
@@ -64,12 +89,12 @@ impl AnswerClient {
             http: Client::builder()
                 .user_agent("EducoderPlusPlus/answer-reader")
                 .timeout(Duration::from_secs(25))
-                .redirect(reqwest::redirect::Policy::none())
+                .redirect(answer_redirect_policy())
                 .retry(reqwest::retry::never())
                 .build()
                 .map_err(Error::Transport)?,
             origin: Url::parse(ORIGIN).expect("fixed answer origin"),
-            cache: CacheStore::new("public-educoder-answer-v1")?,
+            cache: CacheStore::new("public-educoder-answer-gitee-v1")?,
         })
     }
 
@@ -213,6 +238,27 @@ mod tests {
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path},
     };
+
+    #[test]
+    fn gitee_redirects_allow_only_the_https_archive_and_public_cdn() {
+        for host in ["gitee.com", "raw.giteeusercontent.com"] {
+            let url = Url::parse(&format!(
+                "https://{host}/flyingpigcpu-233/educoder-answer/raw/main/index.json?signature=public"
+            ))
+            .unwrap();
+            assert!(trusted_answer_redirect(&url));
+        }
+        for url in [
+            "http://raw.giteeusercontent.com/flyingpigcpu-233/educoder-answer/raw/main/index.json",
+            "https://gitee.com:444/flyingpigcpu-233/educoder-answer/raw/main/index.json",
+            "https://gitee.com.example.org/flyingpigcpu-233/educoder-answer/raw/main/index.json",
+            "https://user@gitee.com/flyingpigcpu-233/educoder-answer/raw/main/index.json",
+            "https://gitee.com/other/repo/raw/main/index.json",
+            "https://gitee.com/login",
+        ] {
+            assert!(!trusted_answer_redirect(&Url::parse(url).unwrap()));
+        }
+    }
 
     async fn setup() -> (MockServer, AnswerClient, tempfile::TempDir) {
         let server = MockServer::start().await;

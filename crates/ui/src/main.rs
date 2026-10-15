@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use educoder_ui::{AppWindow, Controller};
 use slint::ComponentHandle;
 
