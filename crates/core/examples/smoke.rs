@@ -34,8 +34,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         },
     )?;
-    client.validate_session().await?;
+    let user = client.validate_session().await?;
     println!("PASS: session validation");
+    if let Some(bytes) = client.get_user_avatar(&user).await? {
+        println!("PASS: user avatar; bytes={}", bytes.len());
+    } else {
+        println!("SKIP: no platform avatar");
+    }
     let courses = client.get_courses().await?;
     println!(
         "PASS: courses; returned={}; total={:?}",

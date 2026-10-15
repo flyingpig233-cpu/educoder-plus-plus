@@ -1,3 +1,5 @@
+mod avatar;
+pub mod chrome;
 mod controller;
 mod preferences;
 pub mod webview;

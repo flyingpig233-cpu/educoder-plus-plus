@@ -64,6 +64,58 @@ impl Match for Signed {
 }
 
 #[tokio::test]
+async fn avatars_use_platform_paths_without_credentials_or_redirects() {
+    let (server, client) = client().await;
+    let mut user: User = serde_json::from_value::<UserDto>(json!({
+        "login":"demo", "image_url":"avatars/User/demo-photo.jpg"
+    }))
+    .unwrap()
+    .into();
+    Mock::given(method("GET"))
+        .and(path("/images/avatars/User/demo-photo.jpg"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![1, 2, 3]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    assert_eq!(
+        client.get_user_avatar(&user).await.unwrap(),
+        Some(vec![1, 2, 3])
+    );
+    let requests = server.received_requests().await.unwrap();
+    let request = requests
+        .iter()
+        .find(|r| r.url.path().contains("avatars"))
+        .unwrap();
+    assert!(!request.headers.contains_key("cookie"));
+    assert!(!request.headers.contains_key("pc-authorization"));
+    for path in [
+        "https://example.org/avatar",
+        "avatars/User/../private",
+        "avatars/Admin/demo",
+    ] {
+        user.avatar_path = Some(path.into());
+        assert!(client.get_user_avatar(&user).await.is_err());
+    }
+    user.avatar_path = Some("avatars/User/redirect".into());
+    Mock::given(path("/images/avatars/User/redirect"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("{}/unexpected", server.uri())),
+        )
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        client.get_user_avatar(&user).await,
+        Err(Error::Http(302))
+    ));
+    user.avatar_path = None;
+    assert!(client.get_user_avatar(&user).await.unwrap().is_none());
+    let old_cache: User =
+        serde_json::from_value(json!({"login":"demo","display_name":"Demo"})).unwrap();
+    assert!(old_cache.avatar_path.is_none());
+}
+
+#[tokio::test]
 async fn signs_requests_and_maps_user_and_course_variants() {
     let (server, client) = client().await;
     Mock::given(method("GET"))

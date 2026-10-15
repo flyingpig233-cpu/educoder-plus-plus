@@ -113,6 +113,46 @@ impl EducoderClient {
         Ok(user)
     }
 
+    /// Download the platform's public avatar without forwarding session credentials.
+    pub async fn get_user_avatar(&self, user: &User) -> Result<Option<Vec<u8>>> {
+        let Some(path) = user.avatar_path.as_deref() else {
+            return Ok(None);
+        };
+        valid_repo_path(path)?;
+        if !path.starts_with("avatars/User/") {
+            return Err(Error::InvalidInput("头像路径不属于头歌用户头像目录"));
+        }
+        let mut url = self.inner.origin.clone();
+        url.path_segments_mut()
+            .map_err(|_| Error::InvalidInput("头像地址"))?
+            .clear()
+            .push("images")
+            .extend(path.split('/'));
+        self.wait_turn().await;
+        let mut response = self
+            .inner
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(Error::Transport)?;
+        if !response.status().is_success() {
+            return Err(Error::Http(response.status().as_u16()));
+        }
+        const LIMIT: usize = 2 * 1024 * 1024;
+        if response.content_length().is_some_and(|n| n > LIMIT as u64) {
+            return Err(Error::ResponseTooLarge);
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(Error::Transport)? {
+            if chunk.len() > LIMIT.saturating_sub(bytes.len()) {
+                return Err(Error::ResponseTooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(Some(bytes))
+    }
+
     /// Matches the reference endpoint; pagination of this endpoint is unverified.
     pub async fn get_courses(&self) -> Result<Page<Course>> {
         let user = self.get_user_info().await?;

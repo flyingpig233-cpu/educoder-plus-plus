@@ -6,6 +6,7 @@ pub(crate) struct UserDto {
     login: String,
     username: Option<String>,
     real_name: Option<String>,
+    image_url: Option<String>,
 }
 impl From<UserDto> for User {
     fn from(v: UserDto) -> Self {
@@ -16,6 +17,7 @@ impl From<UserDto> for User {
                 .or(v.username)
                 .unwrap_or_else(|| v.login.clone()),
             login: v.login,
+            avatar_path: v.image_url.filter(|path| !path.is_empty()),
         }
     }
 }

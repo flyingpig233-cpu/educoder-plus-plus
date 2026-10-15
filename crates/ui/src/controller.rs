@@ -55,6 +55,7 @@ pub struct Controller {
     pub(super) state: Mutex<State>,
     version: RequestVersion,
     auth_version: RequestVersion,
+    pub(super) avatar_version: AtomicU64,
     pub(super) preferences: Mutex<Preferences>,
     pub(super) workbench: Mutex<WorkbenchState>,
     pub(super) operation: Arc<AtomicBool>,
@@ -71,6 +72,7 @@ impl Controller {
             state: Mutex::new(State::default()),
             version: RequestVersion::default(),
             auth_version: RequestVersion::default(),
+            avatar_version: AtomicU64::new(0),
             preferences: Mutex::new(Preferences::default()),
             workbench: Mutex::new(WorkbenchState::default()),
             operation: Arc::new(AtomicBool::new(false)),
@@ -243,6 +245,8 @@ impl Controller {
         app.set_connected(true);
         app.set_login_open(false);
         app.set_cookie_path("".into());
+        app.set_user_avatar(slint::Image::default());
+        app.invoke_hide_account_menu();
         app.set_course_query("".into());
         app.set_notice(notice.into());
         app.set_kind(0);
@@ -266,6 +270,8 @@ impl Controller {
         app.set_connected(verified);
         app.set_has_session(true);
         app.set_user_name(profile.user.display_name.clone().into());
+        app.set_user_login(profile.user.login.clone().into());
+        self.load_avatar(profile.user.clone(), verified);
         if profile
             .courses
             .total
@@ -554,6 +560,10 @@ impl Controller {
     }
 
     fn reset(&self, app: &AppWindow) {
+        self.avatar_version.fetch_add(1, Ordering::SeqCst);
+        app.set_user_avatar(slint::Image::default());
+        app.set_user_login("".into());
+        app.invoke_hide_account_menu();
         self.auth_version.next();
         self.version.next();
         self.clear_workbench(app);
@@ -765,12 +775,23 @@ mod tests {
         app.set_connected(true);
         app.set_user_name("原用户".into());
         app.set_has_course(true);
+        app.set_user_login("demo".into());
+        app.set_user_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::new(
+            1, 1,
+        )));
+        app.invoke_show_account_menu();
+        assert!(app.get_account_menu_open());
+        let avatar_version = controller.avatar_version.load(Ordering::SeqCst);
         controller.fail(&app, Error::SessionExpired);
         assert!(!app.get_connected());
         assert!(!app.get_has_course());
         assert!(app.get_login_open());
         assert_eq!(app.get_user_name(), "尚未连接头歌");
         assert!(app.get_error_message().contains("过期"));
+        assert!(!app.get_account_menu_open());
+        assert!(app.get_user_login().is_empty());
+        assert_eq!(app.get_user_avatar().size().width, 0);
+        assert!(controller.avatar_version.load(Ordering::SeqCst) > avatar_version);
     }
 
     #[test]

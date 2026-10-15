@@ -41,6 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.set_connected(true);
     app.set_has_session(true);
     app.set_user_name("预览账号 · 示例数据".into());
+    app.set_user_login("demo-student".into());
     app.set_course_title("Rust 程序设计".into());
     app.set_selected_course_id("1".into());
     app.set_has_course(true);
@@ -91,8 +92,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.set_page_label("第 1 页 · 共 24 项".into());
     app.set_can_next(true);
     snapshot(&app, "homeworks-dark")?;
+    app.invoke_show_account_menu();
+    snapshot(&app, "account-menu-dark")?;
+    app.invoke_hide_account_menu();
     app.set_dark_mode(false);
     snapshot(&app, "homeworks-light")?;
+    app.invoke_show_account_menu();
+    snapshot(&app, "account-menu-light")?;
+    app.invoke_hide_account_menu();
     window.set_size(PhysicalSize::new(900, 620));
     snapshot(&app, "compact-light")?;
     app.set_login_open(true);

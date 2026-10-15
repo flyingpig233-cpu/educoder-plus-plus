@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub struct User {
     pub login: String,
     pub display_name: String,
+    #[serde(default)]
+    pub avatar_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

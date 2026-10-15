@@ -64,18 +64,20 @@ impl WebHost {
                             if !trusted_url(&request.uri().to_string()) {
                                 return;
                             }
-                            if serde_json::from_str::<serde_json::Value>(request.body())
+                            let action = serde_json::from_str::<serde_json::Value>(request.body())
                                 .ok()
                                 .and_then(|v| {
                                     v.get("action").and_then(|s| s.as_str()).map(str::to_owned)
-                                })
-                                .as_deref()
-                                == Some("ready")
-                            {
+                                });
+                            if action.as_deref() == Some("ready") {
                                 ipc_ready.set(true);
                             }
                             if let Some(app) = ipc_ui.upgrade() {
-                                app.invoke_web_event(request.body().as_str().into());
+                                if action.as_deref() == Some("dismiss-account-menu") {
+                                    app.invoke_hide_account_menu();
+                                } else {
+                                    app.invoke_web_event(request.body().as_str().into());
+                                }
                             }
                         });
                     builder.build_as_child(window)

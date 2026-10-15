@@ -181,3 +181,6 @@ $('description').addEventListener('click',event=>{if(event.target.closest('a')){
 const splitter=$('splitter');splitter.onpointerdown=event=>{splitter.setPointerCapture(event.pointerId);splitter.onpointermove=e=>{const percent=Math.max(25,Math.min(65,e.clientX/window.innerWidth*100));document.documentElement.style.setProperty('--problem-width',`${percent}%`);};};splitter.onpointerup=()=>{splitter.onpointermove=null;};
 splitter.onkeydown=event=>{if(!['ArrowLeft','ArrowRight'].includes(event.key))return;const width=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--problem-width'))||40;document.documentElement.style.setProperty('--problem-width',`${Math.max(25,Math.min(65,width+(event.key==='ArrowRight'?2:-2)))}%`);};
 window.educoder={receive,editor,flushDraft};updateButtons();notify('ready');
+// WebView child-window input does not travel through Slint's popup event handler.
+document.addEventListener('pointerdown',()=>notify('dismiss-account-menu'),{capture:true});
+document.addEventListener('keydown',event=>{if(event.key==='Escape')notify('dismiss-account-menu');},{capture:true});
