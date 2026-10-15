@@ -22,6 +22,7 @@ const models = new Map();
 const state = { game: '', task: null, base: new Map(), files: [], busy: false, conflict: false, connected: false, samples: [], sampleIndex: 0, sequence: 0 };
 let draftTimer, draftQueue = Promise.resolve(), draftError = false, activeTab = 'local';
 let answerData = null, answerGame = '', answerSequence = 0, answerLoading = false, answerImporting = false;
+let syncTimer, syncPromise = null, syncFailed = false, resultTimer, resultAttempts = 0;
 const editor = monaco.editor.create($('editor'), { theme:'vs-dark', automaticLayout:true, fontFamily:'Consolas, monospace', fontSize:14, lineHeight:22, minimap:{enabled:false}, scrollBeyondLastLine:false, smoothScrolling:true, padding:{top:14}, readOnly:true, ariaLabel:'代码编辑器', tabSize:4, insertSpaces:true, fixedOverflowWidgets:true });
 const language = path => ({rs:'rust',py:'python',c:'cpp',cpp:'cpp',cc:'cpp',cxx:'cpp',h:'cpp',java:'java',js:'javascript',mjs:'javascript',sql:'sql',sh:'shell'})[path.split('.').pop()?.toLowerCase()] || 'plaintext';
 
@@ -45,8 +46,8 @@ function allFiles() { return state.files.filter(f => !f.read_only).map(f => ({ p
 function hasChanges() { return allFiles().some(f => state.base.get(f.path) !== f.content); }
 function updateButtons() {
   const writable = !!state.task && state.files.some(f => !f.read_only);
-  $('save').disabled = state.busy || !state.connected || !state.task?.can_submit || state.conflict || !writable;
-  $('submit').disabled = $('save').disabled;
+  $('submit').disabled = state.busy || !!syncPromise || syncFailed || !state.connected || !state.task?.can_submit || state.conflict || !writable;
+  $('sync-status').textContent = syncPromise?'正在同步到头歌…':syncFailed?'同步失败 · 草稿已保留':!state.connected?'离线 · 草稿已保留':hasChanges()?'等待自动同步':'已同步到头歌';
   $('run').disabled = state.busy || !writable;
   $('files').disabled = state.files.length === 0;
   $('games').disabled = state.busy;
@@ -56,7 +57,7 @@ function updateButtons() {
   $('enter').disabled = state.busy || !state.connected;
   $('answers').disabled = !state.task || state.busy;
   updateAnswerButtons();
-  $('dirty').textContent = hasChanges() ? (draftError ? '草稿保存失败' : '本地草稿') : '已同步';
+  $('dirty').textContent = hasChanges() ? (draftError ? '草稿保存失败' : '本地草稿') : '';
   $('conflict').hidden = !state.conflict;
 }
 function selectFile(path) {
@@ -129,12 +130,44 @@ async function importAnswer(fragment=false) {
     selectFile(target);
     const range=fragment&&sameFile?editor.getSelection():fragment?new monaco.Range(1,1,1,1):editor.getModel().getFullModelRange();
     editor.pushUndoStop();editor.executeEdits('answer-import',[{range,text,forceMoveMarkers:true}]);editor.pushUndoStop();
-    await flushDraft();$('answer-dialog').close();notice('答案已导入本地草稿，可用 Ctrl+Z 撤销；请检查代码后自行保存或提交。');editor.focus();
+    await flushDraft();$('answer-dialog').close();notice('答案已导入本地草稿，可用 Ctrl+Z 撤销；代码会后台同步，请检查后自行提交评测。');editor.focus();
   } catch(e){$('answer-status').textContent=e.message;}
   finally {answerImporting=false;state.busy=false;updateButtons();}
 }
-editor.onDidChangeModelContent(() => { updateButtons(); clearTimeout(draftTimer); draftTimer=setTimeout(()=>flushDraft().catch(e=>error(e.message)),500); });
-editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, ()=>flushDraft().then(()=>notice('本地草稿已保存')).catch(e=>error(e.message)));
+editor.onDidChangeModelContent(() => { updateButtons(); clearTimeout(draftTimer); draftTimer=setTimeout(()=>flushDraft().catch(e=>error(e.message)),500); scheduleSync(); });
+editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, ()=>flushDraft().then(()=>synchronize()).catch(e=>error(e.message)));
+
+function scheduleSync() {
+  clearTimeout(syncTimer);
+  if(!syncFailed)syncTimer=setTimeout(()=>synchronize(),1800);
+}
+async function synchronize() {
+  if(syncPromise)return syncPromise;
+  if(state.busy||syncFailed||!state.connected||!state.task?.can_submit||state.conflict||!hasChanges())return;
+  const game=state.game, sent=allFiles();
+  syncPromise=(async()=>{
+    try {
+      await flushDraft();
+      if(game!==state.game)return;
+      await request('sync',{files:sent});
+      if(game!==state.game)return;
+      for(const file of sent)state.base.set(file.path,file.content);
+      await flushDraft();
+    }catch(e){if(game===state.game){syncFailed=true;error(`自动同步失败：${e.message}。本地草稿已保留，请刷新题目确认远端状态。`);}}
+  })();updateButtons();
+  try { await syncPromise; }
+  finally {syncPromise=null;updateButtons();if(!syncFailed&&game===state.game&&hasChanges())scheduleSync();}
+}
+function pollResults() {
+  clearTimeout(resultTimer);
+  if(++resultAttempts>40){notice('评测尚未返回，后台查询已暂停，请手动刷新结果确认；无需重复提交。');$('remote-status').textContent='等待平台结果 · 请手动刷新';return;}
+  const game=state.game;
+  resultTimer=setTimeout(async()=>{
+    if(game!==state.game||!state.task)return;
+    if(state.busy||syncPromise){pollResults();return;}
+    await operation('result');
+  },3000);
+}
 
 function storeSample() {
   const sample=state.samples[state.sampleIndex]; if(sample){sample.input=$('stdin').value; sample.expected=$('expected').value || null;}
@@ -157,29 +190,47 @@ function flushDraft() {
 }
 
 async function operation(action, payload={}) {
+  if(syncPromise)await syncPromise;
   if(state.busy)return;
   error(); state.busy=true; updateButtons(); $('operation-status').textContent=({save:'正在保存',submit:'正在评测',run:'正在编译运行',result:'正在获取结果',refresh:'正在更新题目',enter:'正在进入实训'})[action]??'正在处理';
   try {
     await flushDraft();
     const sent=allFiles();
     const result=await request(action,{...payload,files:sent,entry:$('files').value,samples:structuredClone(state.samples)});
-    if(action==='save'||action==='submit') { for(const file of sent) state.base.set(file.path,file.content); await flushDraft(); notice(action==='save'?'代码已保存到头歌':'本次评测已结束'); }
+    if(action==='submit') { for(const file of sent) state.base.set(file.path,file.content); await flushDraft(); notice(result?.evaluation?.status===1?'评测仍在进行，正在后台查询结果。':'本次评测已结束');setTab('remote'); }
     if(result?.evaluation) showEvaluation(result.evaluation);
     if(result?.can_submit != null && state.task) state.task.can_submit=result.can_submit;
     if(action==='run') showLocal(result);
-  } catch(e) { if(state.task && (e.message.includes('结果未知') || e.message.includes('仍在进行')))state.task.can_submit=false; error(e.message); }
-  finally {state.busy=false;$('operation-status').textContent='';updateButtons();}
+  } catch(e) { if(state.task && (action==='submit'||e.message.includes('结果未知') || e.message.includes('仍在进行')))state.task.can_submit=false; error(e.message);if(action==='submit')setTab('remote'); }
+  finally {state.busy=false;$('operation-status').textContent='';updateButtons();if(!syncFailed&&hasChanges())scheduleSync();}
+}
+
+function resultOutput(value) {
+  const block=document.createElement('div');block.className='platform-output';
+  const text=String(value??'');
+  if(!/<\/?(?:pre|code|span|div|p|br|table|tr|td|th|b|strong|em|ins|del)\b/i.test(text)) { const pre=document.createElement('pre');pre.textContent=text;block.append(pre);return block; }
+  block.innerHTML=DOMPurify.sanitize(text,{ALLOWED_TAGS:['pre','code','span','div','p','br','table','thead','tbody','tr','td','th','b','strong','em','i','ins','del','ul','ol','li'],ALLOWED_ATTR:['style','colspan','rowspan']});
+  for(const element of block.querySelectorAll('[style]')){
+    const safe={};for(const key of ['color','background-color','font-weight','white-space']){
+      const value=element.style.getPropertyValue(key);
+      if(value&&/^[#\w\s(),.%+-]+$/.test(value)&&!/(url|var|expression)/i.test(value))safe[key]=value;
+    }
+    element.removeAttribute('style');for(const [key,value] of Object.entries(safe))element.style.setProperty(key,value);
+  }
+  return block;
 }
 
 function showEvaluation(evaluation) {
+  clearTimeout(resultTimer);if(evaluation.status!==1){if(resultAttempts)notice('本次评测已结束');resultAttempts=0;}
   const status=({0:'未开始',1:'评测中',2:'通过',3:'未通过'})[evaluation.status]??`状态 ${evaluation.status}`;
   $('remote-status').textContent=status; $('remote-status').className=evaluation.status===2?'passed':evaluation.status===3?'failed':'';
-  $('compile-output').textContent=evaluation.compile_output??'';
+  if(evaluation.status===1)pollResults();
+  $('compile-output').replaceChildren(resultOutput(evaluation.compile_output));
   $('test-cases').replaceChildren(...evaluation.tests.map(test=>{
     const item=document.createElement('details');item.className='test-case';
     const heading=document.createElement('summary'); heading.textContent=`${test.name} · ${test.public?'公开':'隐藏'} · ${test.passed===true?'通过':test.passed===false?'未通过':'尚无结果'}`;item.append(heading);
     for(const [label,text] of [['输入',test.public?test.input:null],['预期输出',test.public?test.expected:null],['实际输出',test.actual]]){
-      if(text==null)continue; const title=document.createElement('div');title.className='muted';title.textContent=label;const pre=document.createElement('pre');pre.textContent=text;item.append(title,pre);
+      if(text==null)continue; const title=document.createElement('div');title.className='muted';title.textContent=label;item.append(title,resultOutput(text));
     }
     if(!test.public){const p=document.createElement('p');p.className='muted';p.textContent='隐藏测试的输入和预期输出由平台保密。';item.append(p);}
     return item;
@@ -198,7 +249,7 @@ function receive(message) {
   if(message.reply_to){const callback=pending.get(message.reply_to);if(!callback)return;clearTimeout(callback.timer);pending.delete(message.reply_to);message.ok?callback.resolve(message.data):callback.reject(new Error(message.error??'操作失败'));return;}
   switch(message.type){
     case 'theme': document.documentElement.dataset.theme=message.dark?'dark':'light'; document.documentElement.style.setProperty('--accent',message.accent);monaco.editor.setTheme(message.dark?'vs-dark':'vs');break;
-    case 'connection': state.connected=message.connected;$('connection').textContent=message.connected?'● 已连接头歌':'● 未连接';$('connection').className=`connection ${message.connected?'online':'offline'}`;updateButtons();break;
+    case 'connection': state.connected=message.connected;$('connection').textContent=message.connected?'● 已连接头歌':'● 未连接';$('connection').className=`connection ${message.connected?'online':'offline'}`;updateButtons();if(state.connected)scheduleSync();break;
     case 'homework':
       $('homework-title').textContent=message.title;
       options($('games'),message.games.map(g=>({value:g.identifier,text:`第 ${g.position} 关 · ${g.name}`})),message.game);
@@ -206,6 +257,7 @@ function receive(message) {
       if(message.can_enter){state.task=null;state.game='';state.files=[];editor.setModel(null);$('description').textContent='点击“进入实训”后可读取题目和代码。';updateButtons();}
       break;
     case 'task': {
+      syncFailed=false;clearTimeout(syncTimer);
       if(state.game!==message.task.game_identifier)resetAnswers();
       const task=message.task; const previous=state.game; state.game=task.game_identifier;state.task=task;
       const drafts=new Map((message.drafts??[]).map(f=>[f.path,f.content]));
@@ -222,14 +274,14 @@ function receive(message) {
       for(const file of state.files){const key=`${state.game}:${file.path}`;if(!models.has(key))models.set(key,monaco.editor.createModel(file.editor_content,language(file.path),monaco.Uri.parse(`inmemory://educoder/${encodeURIComponent(state.game)}/${encodeURIComponent(file.path)}`)));}
       if(state.files.length)selectFile($('files').value);else{editor.setModel(null);editor.updateOptions({readOnly:true});}
       state.samples=message.samples?.length?message.samples:message.evaluation.tests.filter(t=>t.public&&t.input!=null).map((t,i)=>({name:`样例 ${i+1}`,input:t.input,expected:t.expected}));
-      if(!state.samples.length)state.samples=[{name:'自定义样例 1',input:'',expected:null}];state.sampleIndex=0;showSamples();showEvaluation(message.evaluation);updateButtons();notice(message.cached?'已显示缓存题目和本地草稿。':'');break;
+      if(!state.samples.length)state.samples=[{name:'自定义样例 1',input:'',expected:null}];state.sampleIndex=0;showSamples();showEvaluation(message.evaluation);updateButtons();scheduleSync();notice(message.cached?'已显示缓存题目和本地草稿。':'');break;
     }
     case 'notice': notice(message.message);break;
     case 'error': error(message.message);break;
-    case 'before-close': flushDraft().then(()=>notify('close-ready')).catch(e=>error(e.message));break;
-    case 'before-logout': flushDraft().then(()=>notify('logout-ready')).catch(e=>error(e.message));break;
-    case 'navigate': if(state.busy){error('请等待当前操作完成后再切换。');break;} flushDraft().then(()=>notify('navigate',message.target)).catch(e=>error(e.message));break;
-    case 'clear': resetAnswers();clearTimeout(draftTimer);state.game='';state.task=null;state.files=[];state.base.clear();editor.setModel(null);models.forEach(m=>m.dispose());models.clear();$('description').textContent='请选择作业。';$('local-results').replaceChildren();$('test-cases').replaceChildren();updateButtons();break;
+    case 'before-close': flushDraft().then(()=>syncPromise).then(()=>notify('close-ready')).catch(e=>error(e.message));break;
+    case 'before-logout': flushDraft().then(()=>syncPromise).then(()=>notify('logout-ready')).catch(e=>error(e.message));break;
+    case 'navigate': if(state.busy){error('请等待当前操作完成后再切换。');break;} flushDraft().then(()=>syncPromise).then(()=>notify('navigate',message.target)).catch(e=>error(e.message));break;
+    case 'clear': clearTimeout(syncTimer);clearTimeout(resultTimer);syncFailed=false;resultAttempts=0;resetAnswers();clearTimeout(draftTimer);state.game='';state.task=null;state.files=[];state.base.clear();editor.setModel(null);models.forEach(m=>m.dispose());models.clear();$('description').textContent='请选择作业。';$('local-results').replaceChildren();$('test-cases').replaceChildren();updateButtons();break;
   }
 }
 
@@ -244,10 +296,10 @@ $('answer-code').addEventListener('select',updateAnswerButtons);
 $('copy-answer').onclick=copyAnswer;
 $('import-answer').onclick=()=>importAnswer();
 $('insert-answer').onclick=()=>importAnswer(true);
-$('games').onchange=async()=>{const game=$('games').value;try{await flushDraft();notify('select-game',{game});}catch(e){error(e.message);$('games').value=state.game;}};
-$('back').onclick=()=>flushDraft().then(()=>notify('navigate',{page:'homeworks'})).catch(e=>error(e.message));
+$('games').onchange=async()=>{const game=$('games').value;try{await flushDraft();await syncPromise;notify('select-game',{game});}catch(e){error(e.message);$('games').value=state.game;}};
+$('back').onclick=()=>flushDraft().then(()=>syncPromise).then(()=>notify('navigate',{page:'homeworks'})).catch(e=>error(e.message));
 $('settings').onclick=()=>notify('settings');
-for(const action of ['save','submit','run'])$(action).onclick=()=>operation(action);
+for(const action of ['submit','run'])$(action).onclick=()=>operation(action);
 $('refresh-result').onclick=()=>operation('result').then(()=>setTab('remote'));
 $('refresh-task').onclick=()=>operation('refresh');
 $('enter').onclick=()=>operation('enter');

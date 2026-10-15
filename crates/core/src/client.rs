@@ -50,6 +50,15 @@ struct Inner {
     clock_offset: OnceCell<i64>,
     next_request: Mutex<Instant>,
     options: ClientOptions,
+    evaluations: Mutex<std::collections::HashMap<String, EvaluationTicket>>,
+}
+
+// In-memory only: never serialize or expose the platform's temporary security key.
+#[derive(Clone)]
+struct EvaluationTicket {
+    sec_key: String,
+    resubmit: Value,
+    port: Value,
 }
 
 impl EducoderClient {
@@ -79,6 +88,7 @@ impl EducoderClient {
                 clock_offset: OnceCell::new(),
                 next_request: Mutex::new(Instant::now()),
                 options,
+                evaluations: Mutex::new(std::collections::HashMap::new()),
             }),
         })
     }
@@ -89,12 +99,14 @@ impl EducoderClient {
     }
 
     pub async fn replace_session(&self, session: Session) {
+        self.inner.evaluations.lock().await.clear();
         *self.inner.session.write().await = Some(session);
     }
 
     /// Stop future requests on all clones, then remove the saved credential.
     /// Already running requests cannot be recalled.
     pub async fn logout(&self, vault: Option<&SessionVault>) -> Result<()> {
+        self.inner.evaluations.lock().await.clear();
         *self.inner.session.write().await = None;
         if let Some(vault) = vault {
             vault.clear().await?;
@@ -320,6 +332,11 @@ impl EducoderClient {
 
     /// Save all files, then start exactly one evaluation. Never retries writes.
     pub async fn submit_code(&self, task: &TaskDetails, files: &[CodeFile]) -> Result<()> {
+        self.inner
+            .evaluations
+            .lock()
+            .await
+            .remove(&task.task.game_identifier);
         let receipt = self.save_files(task, files, true).await?;
         let context = task
             .submission
@@ -348,15 +365,98 @@ impl EducoderClient {
                 "exercise_id": "", "question_id": "", "subject_id": "", "competition_entry_id": ""
             }
         });
-        self.request::<Value>(
-            Method::POST,
-            &format!("/api/tasks/{}/game_build.json", task.task.game_identifier),
-            &[],
-            Some(&body),
-        )
-        .await
-        .map_err(write_error)?;
+        let response = self
+            .request::<Value>(
+                Method::POST,
+                &format!("/api/tasks/{}/game_build.json", task.task.game_identifier),
+                &[],
+                Some(&body),
+            )
+            .await
+            .map_err(write_error)?;
+        if response.get("status").and_then(Value::as_i64) != Some(1) {
+            return Err(Error::WriteUncertain);
+        }
+        self.inner.evaluations.lock().await.insert(
+            task.task.game_identifier.clone(),
+            EvaluationTicket {
+                sec_key: receipt.sec_key,
+                resubmit,
+                port: response.get("port").cloned().unwrap_or(Value::Null),
+            },
+        );
         Ok(())
+    }
+
+    /// Read the result of this client's most recent submission, using its temporary ticket.
+    /// The platform uses negative statuses while running, 2 for success, and 0 for failure.
+    pub async fn get_evaluation(&self, previous: &TaskDetails) -> Result<TaskDetails> {
+        let game = &previous.task.game_identifier;
+        let ticket = self.inner.evaluations.lock().await.get(game).cloned();
+        let Some(ticket) = ticket else {
+            let mut current = self
+                .get_task_details(
+                    game,
+                    previous.submission.as_ref().map_or(0, |c| c.homework_id),
+                )
+                .await?;
+            if previous.evaluation.status == 1 && current.evaluation.status != 1 {
+                let newer = current
+                    .evaluation
+                    .revision
+                    .zip(previous.evaluation.revision)
+                    .is_some_and(|(now, old)| now > old);
+                if !newer {
+                    return Err(Error::WriteUncertain);
+                }
+                if current.evaluation.status == 0 {
+                    current.evaluation.status = 3;
+                }
+            }
+            return Ok(current);
+        };
+        let context = previous
+            .submission
+            .as_ref()
+            .ok_or(Error::InvalidInput("缺少提交上下文"))?;
+        let mut query = vec![
+            ("sec_key", ticket.sec_key),
+            (
+                "resubmit",
+                match ticket.resubmit {
+                    Value::String(s) => s,
+                    Value::Null => String::new(),
+                    value => value.to_string(),
+                },
+            ),
+            ("time_out", "false".into()),
+            ("challenge_id", context.challenge_id.to_string()),
+            ("homework_common_id", context.homework_id.to_string()),
+            ("subject_id", String::new()),
+        ];
+        if !ticket.port.is_null() {
+            query.push((
+                "port",
+                match ticket.port {
+                    Value::String(s) => s,
+                    v => v.to_string(),
+                },
+            ));
+        }
+        let dto: EvaluationResultDto = self
+            .get(&format!("/api/tasks/{game}/game_status.json"), &query)
+            .await
+            .map_err(|error| match error {
+                Error::Transport(source) => Error::Transport(source.without_url()),
+                other => other,
+            })?;
+        let mut current = previous.clone();
+        if dto.status < 0 {
+            current.evaluation.status = 1;
+        } else {
+            current.evaluation = dto.into_evaluation();
+        }
+        Ok(current)
     }
 
     pub async fn wait_for_evaluation(
@@ -364,13 +464,14 @@ impl EducoderClient {
         previous: &TaskDetails,
         timeout: Duration,
     ) -> Result<TaskDetails> {
-        let homework_id = previous
-            .submission
-            .as_ref()
-            .map(|c| c.homework_id)
-            .unwrap_or_default();
         let started = Instant::now();
         let mut saw_running = false;
+        let has_ticket = self
+            .inner
+            .evaluations
+            .lock()
+            .await
+            .contains_key(&previous.task.game_identifier);
         while started.elapsed() < timeout {
             tokio::time::sleep(
                 Duration::from_secs(2).min(timeout.saturating_sub(started.elapsed())),
@@ -380,12 +481,9 @@ impl EducoderClient {
             if remaining.is_zero() {
                 break;
             }
-            let current = tokio::time::timeout(
-                remaining,
-                self.get_task_details(&previous.task.game_identifier, homework_id),
-            )
-            .await
-            .map_err(|_| Error::EvaluationPending)??;
+            let current = tokio::time::timeout(remaining, self.get_evaluation(previous))
+                .await
+                .map_err(|_| Error::EvaluationPending)??;
             saw_running |= current.evaluation.status == 1;
             let changed = current
                 .evaluation
@@ -393,7 +491,8 @@ impl EducoderClient {
                 .zip(previous.evaluation.revision)
                 .is_some_and(|(now, old)| now > old)
                 || current.evaluation != previous.evaluation;
-            if matches!(current.evaluation.status, 2 | 3) && (saw_running || changed) {
+            if matches!(current.evaluation.status, 2 | 3) && (has_ticket || saw_running || changed)
+            {
                 return Ok(current);
             }
         }
@@ -631,6 +730,7 @@ impl EducoderClient {
             match code {
                 -102 => return Err(Error::Clock),
                 401 | -401 => return Err(Error::SessionExpired),
+                -1 | -2 if path.ends_with("/game_status.json") => {}
                 code if code < 0 => return Err(Error::Platform(code)),
                 _ => {}
             }

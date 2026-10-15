@@ -33,6 +33,7 @@ async fn client() -> (MockServer, EducoderClient) {
                 minimum_interval: Duration::ZERO,
                 ..Default::default()
             },
+            evaluations: Mutex::new(std::collections::HashMap::new()),
         }),
     };
     (server, client)
@@ -436,6 +437,112 @@ async fn save_all_files_then_submit_once_with_signed_post_and_private_tests_reda
         )
         .await
         .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/api/tasks/g1/game_status.json"))
+        .and(Signed)
+        .and(query_param("sec_key", "temporary-key"))
+        .and(query_param("homework_common_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"status":2,"test_sets":[],"last_compile_output":"<pre>ok</pre>"}),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let result = client
+        .wait_for_evaluation(&task, Duration::from_secs(3))
+        .await
+        .unwrap();
+    assert_eq!(result.evaluation.status, 2);
+    assert_eq!(result.evaluation.compile_output, "<pre>ok</pre>");
+}
+
+#[tokio::test]
+async fn evaluation_status_uses_ticket_and_failure_zero_is_terminal() {
+    let (server, client) = client().await;
+    let task = serde_json::from_value::<TaskDetailsDto>(task_fixture(2))
+        .unwrap()
+        .into_details("g1", 9);
+    client.inner.evaluations.lock().await.insert(
+        "g1".into(),
+        EvaluationTicket {
+            sec_key: "secret".into(),
+            resubmit: json!(1),
+            port: json!(8000),
+        },
+    );
+    Mock::given(path("/api/tasks/g1/game_status.json"))
+        .and(query_param("sec_key", "secret"))
+        .and(query_param("port", "8000"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status":-1})))
+        .mount(&server)
+        .await;
+    assert_eq!(
+        client
+            .get_evaluation(&task)
+            .await
+            .unwrap()
+            .evaluation
+            .status,
+        1
+    );
+    assert!(matches!(
+        client
+            .wait_for_evaluation(&task, Duration::from_millis(2100))
+            .await,
+        Err(Error::EvaluationPending)
+    ));
+    server.reset().await;
+    Mock::given(path("/api/tasks/g1/game_status.json")).and(query_param("resubmit","1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status":0,"last_compile_output":"<pre>error</pre>","test_sets":[{"is_public":false,"input":"private","output":"private","actual_output":"<span>bad</span>","result":false}]}))).mount(&server).await;
+    let failed = client
+        .wait_for_evaluation(&task, Duration::from_secs(3))
+        .await
+        .unwrap();
+    assert_eq!(failed.evaluation.status, 3);
+    assert!(failed.evaluation.tests[0].input.is_none());
+    assert!(!serde_json::to_string(&failed).unwrap().contains("secret"));
+    assert_eq!(
+        client
+            .get_evaluation(&failed)
+            .await
+            .unwrap()
+            .evaluation
+            .status,
+        3
+    );
+}
+
+#[tokio::test]
+async fn lost_evaluation_ticket_requires_a_new_revision_before_unlocking_submission() {
+    let (server, client) = client().await;
+    let mut previous = serde_json::from_value::<TaskDetailsDto>(task_fixture(2))
+        .unwrap()
+        .into_details("g1", 9);
+    previous.evaluation.status = 1;
+    Mock::given(path("/api/tasks/g1.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(task_fixture(2)))
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        client.get_evaluation(&previous).await,
+        Err(Error::WriteUncertain)
+    ));
+    server.reset().await;
+    let mut failed = task_fixture(0);
+    failed["evaluate_count"] = json!(5);
+    Mock::given(path("/api/tasks/g1.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(failed))
+        .mount(&server)
+        .await;
+    assert_eq!(
+        client
+            .get_evaluation(&previous)
+            .await
+            .unwrap()
+            .evaluation
+            .status,
+        3
+    );
 }
 
 #[tokio::test]

@@ -183,6 +183,37 @@ struct TestCaseDto {
     is_public: bool,
     result: Option<bool>,
 }
+
+#[derive(Deserialize)]
+pub(crate) struct EvaluationResultDto {
+    pub status: i32,
+    #[serde(default)]
+    test_sets: Vec<TestCaseDto>,
+    last_compile_output: Option<String>,
+    evaluate_count: Option<u64>,
+}
+impl EvaluationResultDto {
+    pub fn into_evaluation(self) -> Evaluation {
+        Evaluation {
+            status: if self.status == 2 { 2 } else { 3 },
+            revision: self.evaluate_count,
+            compile_output: self.last_compile_output.unwrap_or_default(),
+            tests: self
+                .test_sets
+                .into_iter()
+                .enumerate()
+                .map(|(index, t)| TestCase {
+                    name: t.name.unwrap_or_else(|| format!("测试集 {}", index + 1)),
+                    input: t.is_public.then_some(t.input).flatten(),
+                    expected: t.is_public.then_some(t.output).flatten(),
+                    actual: t.actual_output,
+                    public: t.is_public,
+                    passed: t.result,
+                })
+                .collect(),
+        }
+    }
+}
 #[derive(Deserialize)]
 pub(crate) struct TaskDetailsDto {
     #[serde(flatten)]

@@ -317,6 +317,19 @@ impl Controller {
                     .get::<bool>(&format!("pending:{game}"), Duration::MAX)
                     .await
                     .is_some();
+                // A full fresh file snapshot reconciles an uncertain background save.
+                // Never clear a submission marker on the strength of a code read alone.
+                if result.is_ok()
+                    && store
+                        .get::<bool>(&format!("pending-sync:{game}"), Duration::MAX)
+                        .await
+                        .is_some()
+                {
+                    if store.remove(&format!("pending:{game}")).await.is_ok() {
+                        let _ = store.remove(&format!("pending-sync:{game}")).await;
+                        pending = false;
+                    }
+                }
             }
             let _ = ui.upgrade_in_event_loop(move |app| {
                 if c.workbench.lock().expect("workbench").version != version {
@@ -472,7 +485,7 @@ impl Controller {
             "refresh" => self.load_game(&message.context, true, message.id),
             "enter" => self.enter_workbench(message),
             "resolve-conflict" | "discard-draft" => self.resolve_draft(message),
-            "save" | "submit" | "run" | "result" => self.perform_operation(message),
+            "sync" | "submit" | "run" | "result" => self.perform_operation(message),
             _ => {}
         }
     }
@@ -693,16 +706,13 @@ impl Controller {
             let _guard = guard;
             let outcome = async {
                 if message.action == "result" {
+                    let mut previous = document.details.clone();
+                    if let Some(store) = &cache
+                        && store.get::<bool>(&format!("pending:{}", message.context), Duration::MAX).await.is_some() {
+                        previous.evaluation.status = 1;
+                    }
                     let details = client
-                        .get_task_details(
-                            &message.context,
-                            document
-                                .details
-                                .submission
-                                .as_ref()
-                                .map(|c| c.homework_id)
-                                .unwrap_or_default(),
-                        )
+                        .get_evaluation(&previous)
                         .await?;
                     if details.evaluation.status != 1
                         && let Some(store) = &cache {
@@ -763,6 +773,11 @@ impl Controller {
                 }
                 let details = prepare_write(&client, &document, &files).await?;
                 if let Some(store) = &cache {
+                    if message.action == "sync" {
+                        store.put(&format!("pending-sync:{}", message.context), &true).await?;
+                    } else {
+                        store.remove(&format!("pending-sync:{}", message.context)).await?;
+                    }
                     store
                         .put(&format!("pending:{}", message.context), &true)
                         .await?;
@@ -781,20 +796,32 @@ impl Controller {
                     if !matches!(error, Error::WriteUncertain)
                         && let Some(store) = &cache {
                             let _ = store.remove(&format!("pending:{}", message.context)).await;
+                            let _ = store.remove(&format!("pending-sync:{}", message.context)).await;
                         }
                     return Err(error);
                 }
                 let result = if message.action == "submit" {
-                    client
-                        .wait_for_evaluation(&details, Duration::from_secs(90))
-                        .await?
+                    match client
+                        .wait_for_evaluation(&details, Duration::from_secs(60))
+                        .await {
+                        Ok(result) => result,
+                        Err(Error::EvaluationPending) => {
+                            let mut pending = details;
+                            pending.evaluation.status = 1;
+                            pending
+                        }
+                        Err(error) => return Err(error),
+                    }
                 } else {
                     details
                 };
                 if let Some(store) = &cache {
-                    store
+                    if result.evaluation.status != 1 { store
                         .remove(&format!("pending:{}", message.context))
-                        .await?;
+                        .await?; }
+                    if message.action == "sync" {
+                        let _ = store.remove(&format!("pending-sync:{}", message.context)).await;
+                    }
                     let _ = store
                         .put(
                             &format!(
@@ -835,7 +862,7 @@ impl Controller {
                                     doc.files = files;
                                 }
                             }
-                        state.pending_write = false;
+                        state.pending_write = state.document.as_ref().is_some_and(|d| d.details.evaluation.status == 1);
                     }
                     c.reply(&app, &id, Ok(value));
                 }

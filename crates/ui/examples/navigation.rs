@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if message["action"] == "native-navigation" {
             preserved.set(message["payload"]["ok"] == true);
         }
-        if message["action"] == "draft" {
+        if message["action"] == "draft" || message["action"] == "sync" {
             let reply = serde_json::json!({"reply_to":message["id"],"ok":true,"data":{}});
             ipc_host.evaluate_when_ready(&format!("window.educoder.receive({reply});"));
         }

@@ -28,7 +28,7 @@
       <div class="editor-toolbar">
         <select id="files" aria-label="选择代码文件"></select>
         <span id="dirty" class="muted">已同步</span>
-        <button id="save">保存到头歌</button>
+        <span id="sync-status" class="muted" role="status">自动同步</span>
         <button id="submit" class="primary">提交评测</button>
       </div>
       <div id="editor" aria-label="Monaco 代码编辑器"></div>
@@ -43,7 +43,7 @@
           <div class="sample-inputs"><label>标准输入<textarea id="stdin" placeholder="可留空；数据通过 stdin 传入"></textarea></label><label>预期输出（可选）<textarea id="expected" placeholder="留空时仅运行并显示输出"></textarea></label></div>
           <div id="local-results" class="output" aria-live="polite"><span class="muted">使用本机编译器运行当前代码；运行时限 5 秒。</span></div>
         </div>
-        <div id="remote-tab" class="tab-content" hidden><div class="sample-toolbar"><span id="remote-status">尚未获取评测结果</span><button id="refresh-result">刷新结果</button></div><pre id="compile-output"></pre><div id="test-cases"></div></div>
+        <div id="remote-tab" class="tab-content" hidden><div class="sample-toolbar"><span id="remote-status">尚未获取评测结果</span><button id="refresh-result">刷新结果</button></div><div id="compile-output"></div><div id="test-cases"></div></div>
       </section>
     </section>
   </main>
@@ -53,7 +53,7 @@
     <p class="muted">来源：github.com/flyingpig233-cpu/educoder-answer。仓库答案为本地验证版本，平台隐藏测试结果以实际评测为准。</p>
     <div class="sample-toolbar"><select id="answer-files" aria-label="选择答案文件"></select><button id="reload-answer">重新查找</button><button id="copy-answer">复制答案代码</button></div>
     <textarea id="answer-code" readonly aria-label="答案代码" spellcheck="false"></textarea>
-    <p class="muted">完整程序只可导入同类型代码文件；头文件或填空题请选取答案片段后插入。导入覆盖目标文件，可用 Ctrl+Z 撤销，不会自动保存或提交到头歌。</p>
+    <p class="muted">完整程序只可导入同类型代码文件；头文件或填空题请选取答案片段后插入。导入覆盖目标文件，可用 Ctrl+Z 撤销；代码会后台同步，不会自动提交评测。</p>
     <div class="sample-toolbar"><label>导入目标<select id="answer-target" aria-label="答案导入目标"></select></label><button id="import-answer">覆盖目标文件</button><button id="insert-answer">插入所选片段</button></div>
   </dialog>
   <script type="module" src="app.js"></script>

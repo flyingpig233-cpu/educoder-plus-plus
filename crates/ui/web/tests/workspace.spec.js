@@ -9,11 +9,13 @@ test.beforeEach(async({page})=>{
       setTimeout(()=>{
         if(message.action==='draft'&&window.rejectDraft){window.educoder.receive({reply_to:message.id,ok:false,error:'草稿保存失败'});return;}
         if(message.action==='draft')window.drafts.push(message.payload);
+        if(message.action==='sync'&&window.rejectSync){window.educoder.receive({reply_to:message.id,ok:false,error:'网络请求失败'});return;}
         if(message.action==='answers'){
           setTimeout(()=>window.educoder.receive(window.answerError?{reply_to:message.id,ok:false,error:'网络请求失败'}:{reply_to:message.id,ok:true,data:window.answerReply??{answer:null,cached:false,stale:false}}),window.answerDelay??0);return;
         }
         const data=message.action==='run'?{compilation:{exit_code:0,stdout:'',stderr:'',timed_out:false},samples:[{name:'样例 1',passed:true,output:{exit_code:0,stdout:'3\n',stderr:'',elapsed_ms:12,timed_out:false,truncated:false}}]}:
-          message.action==='submit'?{can_submit:true,evaluation:{status:2,compile_output:'',tests:[]}}:{};
+          message.action==='submit'?(window.submitReply??{can_submit:true,evaluation:{status:2,compile_output:'',tests:[]}}):message.action==='result'?{can_submit:true,evaluation:{status:2,compile_output:'<p>评测完成</p>',tests:[]}}:{};
+        if(message.action==='sync'){setTimeout(()=>window.educoder.receive({reply_to:message.id,ok:true,data}),window.syncDelay??0);return;}
         window.educoder.receive({reply_to:message.id,ok:true,data});
       },message.action==='submit'?100:0);
     }};
@@ -24,6 +26,54 @@ test.beforeEach(async({page})=>{
     window.educoder.receive({type:'homework',title:'示例课堂 · 程序设计',games:[{identifier:'demo-game',position:1,name:'求和'}],game:'demo-game',can_enter:false});
     window.educoder.receive({type:'connection',connected:true});window.educoder.receive(frame);
   },frame);
+});
+
+test('automatic sync debounces edits and preserves changes typed during a request',async({page})=>{
+  await expect(page.locator('#save')).toHaveCount(0);
+  await page.evaluate(()=>{window.syncDelay=300;window.educoder.editor.setValue('first');window.educoder.editor.setValue('second');});
+  await expect.poll(()=>page.evaluate(()=>window.messages.filter(m=>m.action==='sync').length)).toBe(1);
+  await page.evaluate(()=>window.educoder.editor.setValue('newer while syncing'));
+  await expect.poll(()=>page.evaluate(()=>window.messages.filter(m=>m.action==='sync').length)).toBe(2);
+  await expect(page.locator('#sync-status')).toHaveText('已同步到头歌');
+  expect(await page.evaluate(()=>window.educoder.editor.getValue())).toBe('newer while syncing');
+  expect(await page.evaluate(()=>window.messages.filter(m=>m.action==='sync').map(m=>m.payload.files[0].content))).toEqual(['second','newer while syncing']);
+  expect(await page.evaluate(()=>window.messages.some(m=>m.action==='submit'))).toBe(false);
+});
+
+test('offline and failed synchronization preserve drafts without blind retries',async({page})=>{
+  await page.evaluate(()=>{window.educoder.receive({type:'connection',connected:false});window.educoder.editor.setValue('offline edits');});
+  await page.waitForTimeout(2000);
+  expect(await page.evaluate(()=>window.messages.some(m=>m.action==='sync'))).toBe(false);
+  await page.evaluate(()=>{window.rejectSync=true;window.educoder.receive({type:'connection',connected:true});});
+  await expect(page.locator('#sync-status')).toContainText('同步失败');
+  await page.evaluate(()=>window.educoder.editor.setValue('keep newer draft'));
+  await page.waitForTimeout(2100);
+  expect(await page.evaluate(()=>window.messages.filter(m=>m.action==='sync').length)).toBe(1);
+  expect(await page.evaluate(()=>window.drafts.at(-1).files[0].content)).toBe('keep newer draft');
+});
+
+test('platform HTML results render safely and plain code remains literal',async({page})=>{
+  await page.evaluate(frame=>{frame.evaluation={status:3,compile_output:'<pre>error &lt;stdio.h&gt;</pre><script>window.resultHacked=true</script><iframe src="https://example.com"></iframe>',tests:[{name:'HTML result',public:true,input:'1 2',expected:'<table><tr><td>42</td></tr></table>',actual:'<span style="color:red;position:fixed" onclick="window.resultHacked=true">41</span>',passed:false},{name:'plain code',public:true,input:'#include <stdio.h>',expected:'a < b',actual:null,passed:null}]};window.educoder.receive(frame);},structuredClone(frame));
+  await page.click('[data-tab=remote]');
+  await expect(page.locator('#compile-output pre')).toHaveText('error <stdio.h>');
+  await expect(page.locator('#compile-output script,#compile-output iframe')).toHaveCount(0);
+  await page.locator('#test-cases details').first().locator('summary').click();
+  await expect(page.locator('#test-cases td')).toHaveText('42');
+  const span=page.locator('#test-cases span');await expect(span).toHaveText('41');
+  expect(await span.getAttribute('onclick')).toBeNull();expect(await span.evaluate(e=>e.style.position)).toBe('');
+  expect(await page.evaluate(()=>window.resultHacked)).toBeUndefined();
+  await page.locator('#test-cases details').nth(1).locator('summary').click();
+  await expect(page.locator('#test-cases details').nth(1)).toContainText('#include <stdio.h>');
+  await page.screenshot({path:'../../../target/ui-previews/platform-results-html.png'});
+});
+
+test('pending submission releases the UI and polls results without resubmitting',async({page})=>{
+  await page.evaluate(()=>window.submitReply={can_submit:false,evaluation:{status:1,compile_output:'',tests:[]}});
+  await page.click('#submit');await expect(page.locator('#notice')).toContainText('后台查询');
+  await expect(page.locator('#back')).toBeEnabled();await expect(page.locator('#submit')).toBeDisabled();
+  await expect(page.locator('#remote-status')).toHaveText('通过',{timeout:7000});
+  expect(await page.evaluate(()=>window.messages.filter(m=>m.action==='submit').length)).toBe(1);
+  await expect(page.locator('#submit')).toBeEnabled();
 });
 
 const answer={title:'求和',status:'public_samples_passed',editable_paths:['main.rs'],files:[{path:'answer/求和.rs',content:'fn main() { println!("42"); }'},{path:'answer/helper.rs',content:'pub fn answer() -> i32 { 42 }'}]};
