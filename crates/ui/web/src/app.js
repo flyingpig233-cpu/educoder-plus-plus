@@ -268,7 +268,7 @@ function receive(message) {
     case 'theme': document.documentElement.dataset.theme=message.dark?'dark':'light';document.documentElement.dataset.reducedMotion=String(!!message.reduce_motion); document.documentElement.style.setProperty('--accent',message.accent);monaco.editor.setTheme(message.dark?'vs-dark':'vs');break;
     case 'celebration': if(!message.game||message.game===state.game)startCelebration(message);break;
     case 'stop-celebration': stopCelebration();break;
-    case 'connection': state.connected=message.connected;$('connection').textContent=message.connected?'● 已连接头歌':'● 未连接';$('connection').className=`connection ${message.connected?'online':'offline'}`;updateButtons();if(state.connected)scheduleSync();break;
+    case 'connection': state.connected=message.connected;updateButtons();if(state.connected)scheduleSync();break;
     case 'homework':
       $('homework-title').textContent=message.title;
       options($('games'),message.games.map(g=>({value:g.identifier,text:`第 ${g.position} 关 · ${g.name}`})),message.game);

@@ -32,6 +32,7 @@ impl WebHost {
         let host_ready = ready.clone();
         let timer = Timer::default();
         let mut last_bounds = None;
+        let mut last_menu_region = None;
         let mut last_theme = None;
         let mut last_connection = None;
         let mut last_visible = false;
@@ -128,6 +129,19 @@ impl WebHost {
                 last_visible = visible;
                 crate::rendering::repaint_all(&app);
             }
+            // Slint popups are drawn in the parent surface; native WebView2
+            // children otherwise paint over the portion outside the sidebar.
+            let menu_region = (
+                bounds,
+                app.get_account_menu_open(),
+                app.get_account_menu_y(),
+                app.window().scale_factor(),
+            );
+            if last_menu_region != Some(menu_region) {
+                clip_account_menu(webview, &app, bounds);
+                last_menu_region = Some(menu_region);
+                crate::rendering::repaint_all(&app);
+            }
             if !ready.get() {
                 return;
             }
@@ -185,6 +199,50 @@ impl WebHost {
             .is_some_and(|view| view.evaluate_script(script).is_ok())
     }
 }
+
+#[cfg(windows)]
+fn clip_account_menu(view: &WebView, app: &AppWindow, bounds: (f32, f32, f32, f32)) {
+    use windows_sys::Win32::Graphics::Gdi::{
+        CombineRgn, CreateRectRgn, DeleteObject, RGN_DIFF, SetWindowRgn,
+    };
+    use wry::WebViewExtWindows;
+    let scale = app.window().scale_factor();
+    let hwnd = view.hwnd().0;
+    unsafe {
+        if !app.get_account_menu_open() {
+            SetWindowRgn(hwnd, std::ptr::null_mut(), 1);
+            return;
+        }
+        let region = CreateRectRgn(
+            0,
+            0,
+            (bounds.2 * scale).ceil() as i32,
+            (bounds.3 * scale).ceil() as i32,
+        );
+        let cutout = CreateRectRgn(
+            ((app.get_account_menu_x() - bounds.0) * scale).floor() as i32,
+            ((app.get_account_menu_y() - bounds.1) * scale).floor() as i32,
+            ((app.get_account_menu_x() + app.get_account_menu_width() - bounds.0) * scale).ceil()
+                as i32,
+            ((app.get_account_menu_y() + app.get_account_menu_height() - bounds.1) * scale).ceil()
+                as i32,
+        );
+        if !region.is_null() && !cutout.is_null() {
+            CombineRgn(region, region, cutout, RGN_DIFF);
+            if SetWindowRgn(hwnd, region, 1) == 0 {
+                DeleteObject(region);
+            }
+        } else if !region.is_null() {
+            DeleteObject(region);
+        }
+        if !cutout.is_null() {
+            DeleteObject(cutout);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn clip_account_menu(_: &WebView, _: &AppWindow, _: (f32, f32, f32, f32)) {}
 
 fn trusted_url(url: &str) -> bool {
     url == "educoder://localhost/index.html"

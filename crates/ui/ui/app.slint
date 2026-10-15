@@ -63,6 +63,51 @@ component ActionButton inherits Rectangle {
     }
 }
 
+component PageArrow inherits Rectangle {
+    in property <bool> next: false;
+    in property <bool> enabled: true;
+    callback clicked;
+    width: 36px; height: 36px; background: transparent;
+    opacity: root.enabled ? 1 : 0.3;
+    accessible-role: button;
+    accessible-label: root.next ? "下一页" : "上一页";
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    Image {
+        x: 9px; y: 9px; width: 18px; height: 18px;
+        source: root.next ? @image-url("../assets/arrow-right.svg") : @image-url("../assets/arrow-left.svg");
+        colorize: touch.has-hover || focus.has-focus ? Theme.text : Theme.muted;
+        animate colorize { duration: Theme.reduce-motion ? 0ms : 140ms; }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => { if e.text == " " || e.text == "\n" { root.clicked(); return accept; } return reject; }
+    }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
+}
+
+component HomeworkTab inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    in property <bool> enabled: true;
+    callback clicked;
+    width: 96px; height: 42px; background: transparent;
+    opacity: root.enabled ? 1 : 0.4;
+    accessible-role: button; accessible-label: root.text;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    Text {
+        width: parent.width; height: parent.height - 3px;
+        text: root.text; font-size: 16px; font-weight: root.selected ? 600 : 400;
+        color: root.selected || touch.has-hover || focus.has-focus ? Theme.text : Theme.muted;
+        horizontal-alignment: center; vertical-alignment: center;
+        animate color { duration: Theme.reduce-motion ? 0ms : 140ms; }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => { if e.text == " " || e.text == "\n" { root.clicked(); return accept; } return reject; }
+    }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
+}
+
 component RefreshButton inherits Rectangle {
     in property <string> label;
     in property <bool> enabled: true;
@@ -70,11 +115,9 @@ component RefreshButton inherits Rectangle {
     private property <float> angle: 0;
     callback clicked;
     width: 36px; height: 36px;
-    border-radius: 9px; border-width: 1px;
-    border-color: focus.has-focus ? Theme.accent : (touch.has-hover ? Theme.muted : Theme.line);
-    background: touch.has-hover || focus.has-focus || root.loading ? Theme.hover : transparent;
+    background: transparent;
     opacity: root.enabled || root.loading ? 1 : 0.4;
-    animate background, border-color, opacity { duration: Theme.reduce-motion ? 0ms : 140ms; }
+    animate opacity { duration: Theme.reduce-motion ? 0ms : 140ms; }
     accessible-role: button;
     accessible-label: root.loading ? root.label + "，正在加载" : root.label;
     accessible-action-default => { if root.enabled && !root.loading { root.clicked(); } }
@@ -86,7 +129,8 @@ component RefreshButton inherits Rectangle {
     Image {
         x: 9px; y: 9px; width: 18px; height: 18px;
         source: @image-url("../assets/refresh.svg");
-        colorize: root.loading ? Theme.accent : Theme.muted;
+        colorize: root.loading ? Theme.accent : (touch.has-hover || focus.has-focus ? Theme.text : Theme.muted);
+        animate colorize { duration: Theme.reduce-motion ? 0ms : 140ms; }
         transform-rotation: root.angle * 1deg;
     }
     focus := FocusScope {
@@ -96,11 +140,6 @@ component RefreshButton inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled && !root.loading; mouse-cursor: pointer;
         clicked => { focus.focus(); root.clicked(); }
-    }
-    if touch.has-hover || focus.has-focus: Rectangle {
-        x: -84px; y: 42px; width: 120px; height: 28px;
-        border-radius: 6px; background: Theme.surface; border-width: 1px; border-color: Theme.line;
-        Text { text: root.label; font-size: 11px; color: Theme.text; horizontal-alignment: center; vertical-alignment: center; }
     }
 }
 
@@ -153,6 +192,24 @@ component InputField inherits Rectangle {
     }
 }
 
+component ConnectionIndicator inherits Rectangle {
+    in property <bool> connected;
+    in property <bool> connecting;
+    in property <bool> failed;
+    private property <bool> bright: true;
+    private property <float> breath: root.bright ? 1 : 0.25;
+    animate breath { duration: 900ms; easing: ease-in-out; }
+    width: 9px; height: 9px; border-radius: 4.5px;
+    background: root.connecting || root.connected ? Theme.good : (root.failed ? Theme.bad : transparent);
+    border-width: 1.5px;
+    border-color: root.connecting || root.connected ? Theme.good : (root.failed ? Theme.bad : Theme.muted);
+    opacity: root.connecting ? root.breath : 1;
+    accessible-role: text;
+    accessible-label: root.connecting ? "正在连接" : (root.connected ? "连接成功" : (root.failed ? "连接失败" : "未登录"));
+    changed connecting => { root.bright = true; }
+    Timer { interval: 900ms; running: root.connecting; triggered => { root.bright = !root.bright; } }
+}
+
 export component AppWindow inherits Window {
     title: "Educoder++ · 工作台";
     no-frame: true;
@@ -169,6 +226,10 @@ export component AppWindow inherits Window {
     in-out property <image> user-avatar;
     in-out property <string> user-login;
     out property <bool> account-menu-open: account-menu.is-open;
+    out property <float> account-menu-x: 16;
+    out property <float> account-menu-y: root.height / 1px - 312;
+    out property <float> account-menu-width: 226;
+    out property <float> account-menu-height: 240;
     private property <float> account-menu-reveal: 0;
     animate account-menu-reveal {
         duration: root.reduce-motion || !account-menu.is-open ? 0ms : 180ms;
@@ -199,6 +260,8 @@ export component AppWindow inherits Window {
     in-out property <float> celebration-progress: 0;
     in-out property <[ConfettiParticle]> confetti;
     in-out property <bool> connected: false;
+    in-out property <bool> connecting: false;
+    in-out property <bool> connection-failed: false;
     in-out property <bool> has-session: false;
     in-out property <int> page: 0;
     in-out property <int> settings-return-page: 0;
@@ -237,7 +300,7 @@ export component AppWindow inherits Window {
     callback start-browser-login;
     callback finish-browser-login;
     callback cancel-browser-login;
-    in-out property <string> user-name: "尚未连接头歌";
+    in-out property <string> user-name: "访客";
     in-out property <string> course-title: "课堂作业";
     in-out property <string> selected-course-id;
     in-out property <string> course-query;
@@ -285,7 +348,6 @@ export component AppWindow inherits Window {
               }
               Text { text: "Educoder++"; font-size: 13px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
               Rectangle { horizontal-stretch: 1; }
-              Text { text: root.connected ? "●  已连接头歌" : "●  未连接"; color: root.connected ? Theme.good : Theme.bad; font-size: 12px; vertical-alignment: center; }
               Rectangle { width: 16px; }
             }
             TouchArea {
@@ -309,10 +371,6 @@ export component AppWindow inherits Window {
               visible: root.sidebar-reveal > 0;
             VerticalLayout {
                 padding: 20px; spacing: 16px;
-                InputField {
-                    text <=> root.course-query; placeholder: "搜索课堂…";
-                    edited(text) => { root.search-courses(text); }
-                }
                 ScrollView {
                     vertical-stretch: 1; content-width: self.width;
                     VerticalLayout {
@@ -343,7 +401,7 @@ export component AppWindow inherits Window {
                             }
                         }
                         if root.courses.length == 0: Text {
-                            text: root.has-session ? "没有匹配的课堂" : "连接后显示你的课堂";
+                            text: root.has-session ? "暂无课堂" : "连接后显示你的课堂";
                             color: Theme.muted; font-size: 12px; wrap: word-wrap;
                         }
                         Rectangle { vertical-stretch: 1; }
@@ -356,8 +414,9 @@ export component AppWindow inherits Window {
                     accessible-role: button; accessible-label: "打开账号菜单";
                     accessible-action-default => { root.show-account-menu(); }
                     Image { x: 8px; y: 7px; width: 38px; height: 38px; source: root.user-avatar.width > 0 ? root.user-avatar : @image-url("../assets/avatar-placeholder.svg"); image-fit: cover; }
-                    Text { x: 58px; width: parent.width - 86px; height: parent.height; text: root.user-name; font-size: 13px; font-weight: 600; color: Theme.text; vertical-alignment: center; overflow: elide; }
-                    Image { x: parent.width - 24px; y: 20px; width: 12px; height: 12px; source: @image-url("../assets/chevron-up.svg"); colorize: Theme.muted; }
+                    Text { x: 58px; width: parent.width - 104px; height: parent.height; text: root.user-name; font-size: 13px; font-weight: 600; color: Theme.text; vertical-alignment: center; overflow: elide; }
+                    Image { x: parent.width - 42px; y: 20px; width: 12px; height: 12px; source: @image-url("../assets/chevron-up.svg"); colorize: Theme.muted; }
+                    ConnectionIndicator { x: parent.width - 21px; y: 21.5px; connected: root.connected; connecting: root.connecting; failed: root.connection-failed; }
                     avatar-focus := FocusScope {
                         key-pressed(e) => { if e.text == " " || e.text == "\n" { root.show-account-menu(); return accept; } return reject; }
                     }
@@ -367,7 +426,7 @@ export component AppWindow inherits Window {
             }
             Text {
                 x: 20px; y: 20px; width: 136px; height: 36px;
-                text: "我的课堂"; color: Theme.muted; font-size: 12px;
+                text: "我的课堂"; color: Theme.muted; font-size: 16px; font-weight: 600;
                 vertical-alignment: center; opacity: root.sidebar-reveal;
             }
             Rectangle {
@@ -376,7 +435,7 @@ export component AppWindow inherits Window {
                 visible: root.sidebar-reveal < 1;
                 Text {
                     x: 20px; y: 84px; width: 24px; height: 100px;
-                    text: "我\n的\n课\n堂"; color: Theme.muted; font-size: 12px;
+                    text: "我\n的\n课\n堂"; color: Theme.muted; font-size: 16px; font-weight: 600;
                     horizontal-alignment: center; vertical-alignment: center;
                 }
                 Rectangle {
@@ -393,6 +452,7 @@ export component AppWindow inherits Window {
                         enabled: root.sidebar-collapsed;
                         key-pressed(e) => { if e.text == " " || e.text == "\n" { root.show-account-menu(); return accept; } return reject; }
                     }
+                    ConnectionIndicator { x: 39px; y: 35px; connected: root.connected; connecting: root.connecting; failed: root.connection-failed; }
                     rail-touch := TouchArea { enabled: root.sidebar-collapsed; mouse-cursor: pointer; clicked => { rail-focus.focus(); if account-menu.is-open { account-menu.close(); } else { root.show-account-menu(); } } }
                 }
             }
@@ -450,12 +510,22 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
-                HorizontalLayout {
-                    height: 36px; spacing: 8px;
-                    ActionButton { text: "实训作业"; selected: root.kind == 0; enabled: root.has-course; clicked => { root.change-kind(0); } }
-                    ActionButton { text: "图文作业"; selected: root.kind == 1; enabled: root.has-course; clicked => { root.change-kind(1); } }
-                    Rectangle { horizontal-stretch: 1; }
-                    Text { text: root.homeworks.length + " 项作业"; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+                Rectangle {
+                    height: 42px;
+                    HorizontalLayout {
+                        width: parent.width; height: parent.height; spacing: 16px;
+                        shixun-tab := HomeworkTab { text: "实训作业"; selected: root.kind == 0; enabled: root.has-course; clicked => { root.change-kind(0); } }
+                        text-tab := HomeworkTab { text: "图文作业"; selected: root.kind == 1; enabled: root.has-course; clicked => { root.change-kind(1); } }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text { text: root.homeworks.length + " 项作业"; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
+                    }
+                    Rectangle {
+                        x: (root.kind == 0 ? shixun-tab.x : text-tab.x) + 12px;
+                        y: parent.height - 2px; width: 72px; height: 2px;
+                        border-radius: 1px; background: Theme.accent;
+                        opacity: root.has-course ? 1 : 0.4;
+                        animate x { duration: Theme.reduce-motion ? 0ms : 220ms; easing: ease-in-out; }
+                    }
                 }
                 if root.notice != "": Text { text: root.notice; color: Theme.muted; font-size: 12px; wrap: word-wrap; }
                 if root.error-message != "": Rectangle {
@@ -476,29 +546,24 @@ export component AppWindow inherits Window {
                             accessible-action-default => { root.open-homework(homework.id); }
                             height: 80px; border-radius: 12px; clip: true; border-width: 1px;
                             border-color: Theme.line;
-                            background: Theme.canvas;
+                            background: homework-touch.has-hover || homework-focus.has-focus ? Theme.hover : Theme.canvas;
+                            animate background { duration: Theme.reduce-motion ? 0ms : 140ms; }
                             HorizontalLayout {
                                 padding: 18px; spacing: 16px;
-                                Rectangle {
-                                    width: 36px;
-                                    Rectangle {
-                                        width: 36px; height: 36px; y: (parent.height - self.height) / 2;
-                                        border-radius: 9px; background: homework.completed ? (Theme.dark ? #254d35 : #d9efdf) : Theme.surface;
-                                        if homework.completed: Image { x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; width: 16px; height: 16px; source: @image-url("../assets/check.svg"); colorize: Theme.good; }
-                                        if !homework.completed: Text { text: root.kind == 0 ? "</>" : "≡"; color: Theme.muted; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
-                                    }
-                                }
                                 Text { horizontal-stretch: 1; text: homework.title; font-size: 14px; font-weight: 500; color: Theme.text; overflow: elide; vertical-alignment: center; }
                                 Rectangle {
                                     width: 76px;
                                     Rectangle {
                                         width: 76px; height: 26px; y: (parent.height - self.height) / 2;
-                                        border-radius: 6px; background: Theme.surface;
-                                        Text { text: homework.progress; color: Theme.muted; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                                        border-radius: 6px; background: homework.completed ? (Theme.dark ? #254d35 : #d9efdf) : Theme.surface;
+                                        Text { text: homework.progress; color: homework.completed ? Theme.good : Theme.muted; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
                                     }
                                 }
                             }
-                            TouchArea { mouse-cursor: pointer; clicked => { root.open-homework(homework.id); } }
+                            homework-focus := FocusScope {
+                                key-pressed(e) => { if e.text == " " || e.text == "\n" { root.open-homework(homework.id); return accept; } return reject; }
+                            }
+                            homework-touch := TouchArea { mouse-cursor: pointer; clicked => { homework-focus.focus(); root.open-homework(homework.id); } }
                         }
                         Rectangle { vertical-stretch: 1; }
                     }
@@ -526,10 +591,9 @@ export component AppWindow inherits Window {
                 }
                 if root.has-course: HorizontalLayout {
                     height: 36px; spacing: 8px;
-                    Text { text: root.page-label; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
                     Rectangle { horizontal-stretch: 1; }
-                    ActionButton { text: "上一页"; enabled: root.can-previous && !root.busy; clicked => { root.change-page(-1); } }
-                    ActionButton { text: "下一页"; enabled: root.can-next && !root.busy; clicked => { root.change-page(1); } }
+                    PageArrow { enabled: root.can-previous && !root.busy; clicked => { root.change-page(-1); } }
+                    PageArrow { next: true; enabled: root.can-next && !root.busy; clicked => { root.change-page(1); } }
                 }
             }
         }
@@ -658,7 +722,8 @@ export component AppWindow inherits Window {
         border-radius: root.window-expanded ? 0px : 12px;
     }
     account-menu := PopupWindow {
-        x: 16px; y: root.height - 312px; width: 226px; height: 240px;
+        x: root.account-menu-x * 1px; y: root.account-menu-y * 1px;
+        width: root.account-menu-width * 1px; height: root.account-menu-height * 1px;
         close-policy: close-on-click-outside;
         Rectangle {
             width: parent.width; height: 232px;
@@ -677,7 +742,7 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         spacing: 3px; alignment: center;
                         Text { text: root.user-name; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
-                        Text { text: root.has-session ? "@" + root.user-login : "连接你的头歌账号"; color: Theme.muted; font-size: 11px; overflow: elide; }
+                        Text { text: root.has-session ? "@" + root.user-login : "Educoder++"; color: Theme.muted; font-size: 11px; overflow: elide; }
                     }
                 }
                 Rectangle { height: 1px; background: Theme.line; }

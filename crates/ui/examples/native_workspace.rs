@@ -174,6 +174,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if settle_ticks>=3 {
                 app.window().with_winit_window(|window| {if let Some(theme)=window.theme(){assert_eq!(app.get_dark_mode(),theme==slint::winit_030::winit::window::Theme::Dark);}});
                 println!("Native whole-window celebration / follow system theme: true");
+                app.invoke_hide_account_menu();
+                app.set_reduce_motion(true);
+                app.invoke_toggle_sidebar();
+                app.invoke_show_account_menu();
+                stage=8;settle_ticks=0;
+            }
+        }
+        if stage==8 {
+            settle_ticks+=1;
+            if settle_ticks>=4 {
+                #[cfg(windows)]
+                app.window().with_winit_window(|window| {
+                    let size=window.inner_size();
+                    let pixels=native_capture::pixels(window,size.height);
+                    let x=(236.0*window.scale_factor()) as usize;
+                    let y=((size.height as f64/window.scale_factor()-200.0)*window.scale_factor()) as usize;
+                    let offset=(y*size.width as usize+x)*4;
+                    let surface=if app.get_dark_mode(){36}else{245};
+                    assert_eq!(&pixels[offset..offset+3], &[surface;3], "collapsed avatar menu must paint above the native editor");
+                    image::save_buffer("target/ui-previews/collapsed-menu-native.png",&pixels,size.width,size.height,image::ColorType::Rgba8).unwrap();
+                });
+                app.invoke_hide_account_menu();
+                println!("Native collapsed avatar menu above editor: true");
                 let _=slint::quit_event_loop();
             }
         }

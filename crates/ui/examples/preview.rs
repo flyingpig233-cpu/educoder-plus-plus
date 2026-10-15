@@ -201,6 +201,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.invoke_toggle_sidebar();
     snapshot(&app, "sidebar-collapsed-reduced-motion")?;
     assert_eq!(app.get_web_x(), 65.0);
+    app.invoke_toggle_sidebar();
+    app.set_connected(false);
+    app.set_has_session(false);
+    app.set_user_name("访客".into());
+    snapshot(&app, "connection-signed-out")?;
+    app.set_connection_failed(true);
+    snapshot(&app, "connection-failed")?;
+    app.set_reduce_motion(false);
+    app.set_connecting(true);
+    snapshot(&app, "connection-connecting-bright")?;
+    clock.set(clock.get() + Duration::from_millis(900));
+    snapshot(&app, "connection-connecting-fade-start")?;
+    clock.set(clock.get() + Duration::from_millis(450));
+    snapshot(&app, "connection-connecting-middle")?;
+    // Sample before the next timer reverses the animation direction.
+    clock.set(clock.get() + Duration::from_millis(449));
+    snapshot(&app, "connection-connecting-dim")?;
+    let bright = image::open("target/ui-previews/connection-connecting-bright.png")?.to_rgba8();
+    let middle = image::open("target/ui-previews/connection-connecting-middle.png")?.to_rgba8();
+    let dim = image::open("target/ui-previews/connection-connecting-dim.png")?.to_rgba8();
+    assert!(
+        bright != middle,
+        "breathing must fade through intermediate opacity"
+    );
+    assert!(
+        middle != dim,
+        "breathing must continue fading toward its minimum"
+    );
+    app.set_connecting(false);
+    app.set_connection_failed(false);
+    app.set_connected(true);
+    app.set_has_session(true);
+    snapshot(&app, "connection-success")?;
+    app.set_reduce_motion(false);
+    app.set_kind(1);
+    snapshot(&app, "homework-tab-slide-start")?;
+    clock.set(clock.get() + Duration::from_millis(110));
+    snapshot(&app, "homework-tab-slide-middle")?;
+    clock.set(clock.get() + Duration::from_millis(110));
+    snapshot(&app, "homework-tab-slide-end")?;
+    let start = image::open("target/ui-previews/homework-tab-slide-start.png")?.to_rgba8();
+    let middle = image::open("target/ui-previews/homework-tab-slide-middle.png")?.to_rgba8();
+    let end = image::open("target/ui-previews/homework-tab-slide-end.png")?.to_rgba8();
+    assert!(
+        start != middle && middle != end,
+        "tab underline must slide through an intermediate position"
+    );
+    app.set_reduce_motion(true);
+    app.set_kind(0);
+    snapshot(&app, "homework-tab-reduced-motion")?;
     println!("Previews saved to target/ui-previews/");
     Ok(())
 }

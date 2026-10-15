@@ -168,6 +168,10 @@ impl Controller {
     }
 
     pub fn restore(self: &Arc<Self>) {
+        if let Some(app) = self.ui.upgrade() {
+            app.set_connecting(true);
+            app.set_connection_failed(false);
+        }
         let vault = self.vault.clone();
         self.spawn(
             async move {
@@ -202,8 +206,12 @@ impl Controller {
                     }
                     c.authenticate_current();
                 }
-                Ok(None) => app.set_notice("连接头歌账号后，即可查看课堂作业。".into()),
-                Err(error) => c.fail(app, error),
+                Ok(None) => app.set_connecting(false),
+                Err(error) => {
+                    app.set_connecting(false);
+                    app.set_connection_failed(true);
+                    c.fail(app, error);
+                }
             },
         );
     }
@@ -214,6 +222,8 @@ impl Controller {
             return;
         }
         let vault = self.vault.clone();
+        app.set_connecting(true);
+        app.set_connection_failed(false);
         self.spawn(
             async move {
                 let login = authenticate(session.clone()).await?;
@@ -228,7 +238,11 @@ impl Controller {
                 Ok((login, warning)) => c.connected(app, login, warning),
                 // An unsuccessful account switch must not discard the current
                 // account or its drafts. Only a validated session replaces it.
-                Err(error) => app.set_error_message(error.to_string().into()),
+                Err(error) => {
+                    app.set_connecting(false);
+                    app.set_connection_failed(!app.get_connected());
+                    app.set_error_message(error.to_string().into());
+                }
             },
         );
     }
@@ -242,6 +256,8 @@ impl Controller {
         app.set_page(0);
         app.set_has_session(true);
         app.set_connected(true);
+        app.set_connecting(false);
+        app.set_connection_failed(false);
         app.set_login_open(false);
         app.set_user_avatar(slint::Image::default());
         app.invoke_hide_account_menu();
@@ -301,6 +317,10 @@ impl Controller {
             (state.client.clone(), state.cache.clone())
         };
         let Some(client) = client else { return };
+        if let Some(app) = self.ui.upgrade() {
+            app.set_connecting(true);
+            app.set_connection_failed(false);
+        }
         let token = self.auth_version.next();
         let c = self.clone();
         let ui = self.ui.clone();
@@ -319,8 +339,10 @@ impl Controller {
                 if !c.auth_version.is_current(token) {
                     return;
                 }
+                app.set_connecting(false);
                 match result {
                     Ok(profile) => {
+                        app.set_connection_failed(false);
                         c.apply_profile(&app, profile, true);
                     }
                     Err(error) => {
@@ -328,7 +350,7 @@ impl Controller {
                             c.fail(&app, error);
                         } else {
                             app.set_connected(false);
-                            app.set_notice("暂时无法连接头歌，仍可浏览已缓存的数据。".into());
+                            app.set_connection_failed(true);
                             app.set_error_message(error.to_string().into());
                         }
                     }
@@ -656,7 +678,7 @@ impl Controller {
                         "当前会话已断开，但系统凭据库清理失败，请重试退出登录。".into(),
                     );
                 } else {
-                    app.set_notice("已退出登录。".into());
+                    app.set_notice("".into());
                 }
             },
         );
@@ -673,6 +695,8 @@ impl Controller {
         self.clear_workbench(app);
         *self.state.lock().expect("UI state") = State::default();
         app.set_connected(false);
+        app.set_connecting(false);
+        app.set_connection_failed(false);
         app.set_has_session(false);
         app.set_page(0);
         app.set_cache_status("".into());
@@ -682,7 +706,7 @@ impl Controller {
         app.set_selected_course_id("".into());
         app.set_course_query("".into());
         app.set_course_title("课堂作业".into());
-        app.set_user_name("尚未连接头歌".into());
+        app.set_user_name("访客".into());
         app.set_notice("".into());
         app.set_error_message("".into());
         app.set_can_next(false);
@@ -899,6 +923,8 @@ mod tests {
         assert_eq!(app.get_course_title(), "新课堂");
         app.set_connected(true);
         app.set_user_name("原用户".into());
+        app.set_connecting(true);
+        app.set_connection_failed(true);
         app.set_has_course(true);
         app.set_user_login("demo".into());
         app.set_user_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::new(
@@ -911,7 +937,9 @@ mod tests {
         assert!(!app.get_connected());
         assert!(!app.get_has_course());
         assert!(app.get_login_open());
-        assert_eq!(app.get_user_name(), "尚未连接头歌");
+        assert_eq!(app.get_user_name(), "访客");
+        assert!(!app.get_connecting());
+        assert!(!app.get_connection_failed());
         assert!(app.get_error_message().contains("过期"));
         assert!(!app.get_account_menu_open());
         assert!(app.get_user_login().is_empty());
