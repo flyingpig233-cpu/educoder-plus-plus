@@ -17,6 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = AppWindow::new()?;
     app.set_theme_mode(2);
     let _chrome = educoder_ui::chrome::WindowChrome::attach(&app);
+    app.set_reduce_motion(false);
     let controller = Controller::bind(&app, runtime.handle().clone());
     let host = WebHost::attach(&app, controller);
     let passed = Rc::new(Cell::new(false));
@@ -58,10 +59,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let native_passed = chrome_passed.clone();
     let mut stage = 0;
     let mut settle_ticks = 0;
+    let mut restored_bounds = None;
+    let mut transition_bounds = None;
     tick.start(TimerMode::Repeated, Duration::from_millis(100), move || {
         let Some(app) = weak.upgrade() else { return };
         for reply in replies.borrow_mut().drain(..) {
             host.evaluate_when_ready(&format!("window.educoder.receive({reply})"));
+        }
+        if app.get_window_transitioning() {
+            app.window().with_winit_window(|window| {
+                let bounds = (window.outer_position().unwrap(), window.inner_size());
+                assert_eq!(Some(bounds), transition_bounds, "compositor animation must not resize live content each frame");
+            });
         }
         match stage {
             0 => {
@@ -76,10 +85,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 capture_title_bar(&app, "titlebar-native-normal");
                 #[cfg(windows)]
                 assert!(rounded_region(&app));
+                app.window().with_winit_window(|window| {
+                    restored_bounds = Some((window.outer_position().unwrap(), window.inner_size()));
+                });
                 app.invoke_maximize_window();
+                app.window().with_winit_window(|window| {
+                    transition_bounds = Some((window.outer_position().unwrap(), window.inner_size()));
+                });
                 stage = 2;
             }
-            2 if app.get_window_maximized() => {
+            2 if app.get_window_maximized() && !app.get_window_transitioning() => {
                 settle_ticks += 1;
                 if settle_ticks < 3 { return; }
                 settle_ticks = 0;
@@ -88,9 +103,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 #[cfg(windows)]
                 assert!(!rounded_region(&app));
                 app.invoke_maximize_window();
+                app.window().with_winit_window(|window| {
+                    transition_bounds = Some((window.outer_position().unwrap(), window.inner_size()));
+                });
                 stage = 3;
             }
-            3 if !app.get_window_maximized() => {
+            3 if !app.get_window_maximized() && !app.get_window_transitioning() => {
                 settle_ticks += 1;
                 if settle_ticks < 3 { return; }
                 settle_ticks = 0;
@@ -98,6 +116,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 capture_title_bar(&app, "titlebar-native-restored");
                 #[cfg(windows)]
                 assert!(rounded_region(&app));
+                app.window().with_winit_window(|window| {
+                    assert_eq!(Some((window.outer_position().unwrap(), window.inner_size())), restored_bounds, "animation lost the original restore position or size");
+                });
+                app.set_reduce_motion(true);
+                app.invoke_maximize_window();
+                assert!(!app.get_window_transitioning());
+                app.window().with_winit_window(|window| assert!(window.is_maximized()));
+                app.invoke_maximize_window();
+                app.window().with_winit_window(|window| {
+                    assert!(!window.is_maximized());
+                    assert_eq!(Some((window.outer_position().unwrap(), window.inner_size())), restored_bounds);
+                });
+                app.set_reduce_motion(false);
                 println!("Native avatar menu / rounded window / maximize-restore: true");
                 native_passed.set(true);
                 app.set_theme_mode(1);app.set_dark_mode(false);
@@ -207,6 +238,8 @@ fn rounded_region(app: &AppWindow) -> bool {
 }
 
 /// Capture only this synthetic window's actual native title bar, including NC paint.
+/// Call only after DWM has settled: GDI does not expose the compositor's
+/// transformed animation surface and cannot validate an in-flight DWM frame.
 #[cfg(windows)]
 fn capture_title_bar(app: &AppWindow, name: &str) {
     use slint::winit_030::{
@@ -228,11 +261,13 @@ fn capture_title_bar(app: &AppWindow, name: &str) {
         );
         unsafe {
             assert!(!window.is_decorated());
-            assert_eq!(
-                GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION,
-                0,
-                "native caption style was restored"
-            );
+            if !app.get_window_transitioning() {
+                assert_eq!(
+                    GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION,
+                    0,
+                    "native caption must be removed after the compositor transition"
+                );
+            }
             SendMessageW(hwnd, WM_NCPAINT, 1, 0);
             SendMessageW(hwnd, WM_NCACTIVATE, 0, 0);
             SendMessageW(hwnd, WM_NCACTIVATE, 1, 0);

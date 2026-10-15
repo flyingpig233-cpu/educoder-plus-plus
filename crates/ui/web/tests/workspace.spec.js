@@ -31,6 +31,38 @@ test.beforeEach(async({page})=>{
   },frame);
 });
 
+test('refresh icons track their own requests and recover after failures',async({page})=>{
+  await page.evaluate(()=>{
+    const original=window.ipc.postMessage;
+    window.refreshRequests=[];
+    window.ipc.postMessage=body=>{
+      const message=JSON.parse(body);
+      if(['refresh','result','answers'].includes(message.action)){window.refreshRequests.push(message);return;}
+      original(body);
+    };
+  });
+  for(const [id,label] of [['refresh-task','刷新题目'],['refresh-result','刷新结果'],['reload-answer','重新查找答案']]){
+    if(id==='refresh-result')await page.click('[data-tab=remote]');
+    if(id==='reload-answer'){
+      await page.click('#answers');
+      await page.evaluate(()=>window.educoder.receive({reply_to:window.refreshRequests.at(-1).id,ok:true,data:{answer:null}}));
+    }
+    const button=page.getByRole('button',{name:label,exact:true});
+    await button.click();
+    await expect(button).toHaveAttribute('aria-busy','true');
+    await expect(button).toBeDisabled();
+    await expect(button.locator('svg')).toHaveCSS('animation-name','refresh-spin');
+    await page.emulateMedia({reducedMotion:'reduce'});
+    await expect(button.locator('svg')).toHaveCSS('animation-name','none');
+    await page.emulateMedia({reducedMotion:'no-preference'});
+    await page.screenshot({path:`../../../target/ui-previews/${id}-loading.png`});
+    await page.evaluate(()=>window.educoder.receive({reply_to:window.refreshRequests.at(-1).id,ok:false,error:'模拟刷新失败'}));
+    await expect(button).toHaveAttribute('aria-busy','false');
+    await expect(button).toBeEnabled();
+    await expect(button.locator('svg')).toHaveCSS('animation-name','none');
+  }
+});
+
 test('nonstandard Markdown headings render without rewriting code fences',async({page})=>{
   await page.evaluate(frame=>{frame.task.description_markdown='#标题\n\n##要求\n\n> ###引用标题\n\n```c\n#include <stdio.h>\n#define ANSWER 42\n##not a heading\n```\n\n    #indented code\n\n<pre>\n#raw code\n</pre>\n\n普通的 #文字';window.educoder.receive(frame);},structuredClone(frame));
   await expect(page.locator('#description h1')).toHaveText('标题');await expect(page.locator('#description h2')).toHaveText('要求');await expect(page.locator('#description h3')).toHaveText('引用标题');

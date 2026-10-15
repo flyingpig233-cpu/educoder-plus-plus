@@ -29,8 +29,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|i| HomeworkRow {
                 id: i.to_string().into(),
                 title: format!("作业 {i} · 示例代码任务").into(),
-                subtitle: "合成测试数据".into(),
-                badge: "实训作业".into(),
+                progress: "0 / 4".into(),
+                completed: false,
             })
             .collect::<Vec<_>>(),
     )));

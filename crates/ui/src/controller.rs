@@ -13,7 +13,7 @@ use educoder_core::{
     cache::CacheStore,
     models::{Course, Homework, HomeworkKind, Page, PageRequest, User},
 };
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use tokio::runtime::Handle;
 
 use crate::{
@@ -33,6 +33,7 @@ pub(super) struct State {
     pub page: u32,
     pub kind: i32,
     pub homeworks: Vec<Homework>,
+    pub homework_progress: HashMap<u64, crate::progress::HomeworkProgress>,
     pages: HashMap<(u64, i32, u32), (Instant, Page<Homework>)>,
     pub workspace: Option<educoder_core::workspace::WorkspaceCache>,
 }
@@ -240,6 +241,31 @@ impl Controller {
         );
     }
 
+    pub(crate) fn import_browser_session(self: &Arc<Self>, session: Session) {
+        let Some(app) = self.ui.upgrade() else { return };
+        if app.get_busy() || self.operation.load(Ordering::SeqCst) {
+            return;
+        }
+        let vault = self.vault.clone();
+        self.spawn(
+            async move {
+                let login = authenticate(session.clone()).await?;
+                let warning = if vault.save(&session).await.is_err() {
+                    "已连接，但系统凭据库未能保存会话；下次启动需要重新登录。".to_owned()
+                } else {
+                    String::new()
+                };
+                Ok::<_, Error>((login, warning))
+            },
+            |c, app, result| match result {
+                Ok((login, warning)) => c.connected(app, login, warning),
+                // An unsuccessful account switch must not discard the current
+                // account or its drafts. Only a validated session replaces it.
+                Err(error) => app.set_error_message(error.to_string().into()),
+            },
+        );
+    }
+
     fn connected(self: &Arc<Self>, app: &AppWindow, login: Login, notice: String) {
         self.cancel_prefetch();
         self.cleanup_pending.store(false, Ordering::SeqCst);
@@ -408,7 +434,7 @@ impl Controller {
         app.set_error_message("".into());
         app.set_can_previous(page > 1);
         if let Some((loaded, value)) = memory {
-            self.show_page(&app, (id, kind, page), value, false);
+            self.show_page(&app, (id, kind, page), value, false, false);
             if !force && loaded.elapsed() < Duration::from_secs(600) {
                 app.set_busy(false);
                 return;
@@ -435,7 +461,7 @@ impl Controller {
                 let value = cached.value;
                 let _ = ui2.upgrade_in_event_loop(move |app| {
                     if c2.version.is_current(token) {
-                        c2.show_page(&app, (id, kind, page), value, false);
+                        c2.show_page(&app, (id, kind, page), value, false, false);
                         app.set_busy(!fresh);
                     }
                 });
@@ -466,11 +492,101 @@ impl Controller {
                 }
                 app.set_busy(false);
                 match result {
-                    Ok(value) => c.show_page(&app, (id, kind, page), value, true),
+                    Ok(value) => c.show_page(&app, (id, kind, page), value, true, force),
                     Err(error) => c.fail(&app, error),
                 }
             });
         });
+    }
+
+    pub(super) fn set_homework_games(
+        &self,
+        app: &AppWindow,
+        id: u64,
+        games: &[educoder_core::models::Game],
+        force: bool,
+    ) {
+        self.state
+            .lock()
+            .expect("UI state")
+            .homework_progress
+            .entry(id)
+            .or_default()
+            .set_games(games, force);
+        self.publish_homework_progress(app, id);
+    }
+
+    pub(super) fn set_unstarted_progress(
+        &self,
+        app: &AppWindow,
+        id: u64,
+        total: usize,
+        confirmed: bool,
+    ) {
+        self.state
+            .lock()
+            .expect("UI state")
+            .homework_progress
+            .entry(id)
+            .or_default()
+            .set_unstarted(total, confirmed);
+        self.publish_homework_progress(app, id);
+    }
+
+    pub(super) fn update_homework_progress(
+        &self,
+        app: &AppWindow,
+        id: u64,
+        game: &str,
+        status: i32,
+    ) {
+        let status = if app.get_page() == 2 {
+            // A background snapshot may have started before the latest save or
+            // evaluation. Prefer the currently displayed editor result for it.
+            let state = self.workbench.lock().expect("workbench");
+            state.homework_progress_status(id, game).unwrap_or(status)
+        } else {
+            status
+        };
+        if let Some(progress) = self
+            .state
+            .lock()
+            .expect("UI state")
+            .homework_progress
+            .get_mut(&id)
+        {
+            progress.update(game, status);
+        }
+        self.publish_homework_progress(app, id);
+    }
+
+    fn publish_homework_progress(&self, app: &AppWindow, id: u64) {
+        let display = {
+            let state = self.state.lock().expect("UI state");
+            if state.kind != 0 {
+                return;
+            }
+            state
+                .homework_progress
+                .get(&id)
+                .map(crate::progress::HomeworkProgress::display)
+        };
+        let Some((progress, completed)) = display else {
+            return;
+        };
+        let rows = app.get_homeworks();
+        let Some(model) = rows.as_any().downcast_ref::<VecModel<HomeworkRow>>() else {
+            return;
+        };
+        let id = id.to_string();
+        for (index, mut row) in model.iter().enumerate() {
+            if row.id == id && (row.progress != progress || row.completed != completed) {
+                row.progress = progress.clone().into();
+                row.completed = completed;
+                model.set_row_data(index, row);
+                break;
+            }
+        }
     }
 
     fn show_page(
@@ -479,6 +595,7 @@ impl Controller {
         key: (u64, i32, u32),
         page: Page<Homework>,
         remote: bool,
+        force: bool,
     ) {
         let count = page.items.len();
         app.set_can_next(has_next_page(key.2, count, page.total));
@@ -489,7 +606,11 @@ impl Controller {
             }
             .into(),
         );
-        app.set_homeworks(homework_rows(page.items.clone(), key.1));
+        app.set_homeworks(homework_rows(
+            page.items.clone(),
+            key.1,
+            &self.state.lock().expect("UI state").homework_progress,
+        ));
         app.set_cache_status(
             if remote {
                 "刚刚更新"
@@ -505,7 +626,7 @@ impl Controller {
             state.pages.insert(key, (Instant::now(), page));
         }
         drop(state);
-        self.prefetch_homeworks(if key.1 == 0 { prefetch } else { Vec::new() });
+        self.prefetch_homeworks(if key.1 == 0 { prefetch } else { Vec::new() }, force);
     }
 
     fn refresh(self: &Arc<Self>) {
@@ -690,27 +811,28 @@ fn course_rows(courses: &[Course], query: &str) -> ModelRc<CourseRow> {
     ModelRc::new(VecModel::from(rows))
 }
 
-fn homework_rows(items: Vec<Homework>, kind: i32) -> ModelRc<HomeworkRow> {
+fn homework_rows(
+    items: Vec<Homework>,
+    kind: i32,
+    progress: &HashMap<u64, crate::progress::HomeworkProgress>,
+) -> ModelRc<HomeworkRow> {
     let rows = items
         .into_iter()
-        .map(|h| HomeworkRow {
-            id: h.id.to_string().into(),
-            title: h.name.into(),
-            subtitle: format!(
-                "作业 #{}{}",
-                h.id,
-                h.shixun_identifier
-                    .map(|id| format!("  ·  实训 {id}"))
-                    .unwrap_or_default()
-            )
-            .into(),
-            // Instance existence is not a submission/completion status.
-            badge: if kind == 0 {
-                "实训作业"
+        .map(|h| {
+            let (progress, completed) = if kind == 0 {
+                progress
+                    .get(&h.id)
+                    .map(crate::progress::HomeworkProgress::display)
+                    .unwrap_or(("— / —".into(), false))
             } else {
-                "图文作业"
+                ("— / —".into(), false)
+            };
+            HomeworkRow {
+                id: h.id.to_string().into(),
+                title: h.name.into(),
+                progress: progress.into(),
+                completed,
             }
-            .into(),
         })
         .collect::<Vec<_>>();
     ModelRc::new(VecModel::from(rows))
@@ -785,6 +907,26 @@ mod tests {
         assert!(app.get_busy());
         events.recv_timeout(Duration::from_secs(5)).unwrap()();
         assert_eq!(app.get_course_title(), "新课堂");
+        let rows = Rc::new(VecModel::from(vec![HomeworkRow {
+            id: "7".into(),
+            title: "示例作业".into(),
+            progress: "— / —".into(),
+            completed: false,
+        }]));
+        app.set_homeworks(ModelRc::from(rows.clone()));
+        let games = ["a", "b"].map(|id| educoder_core::models::Game {
+            identifier: id.into(),
+            position: 1,
+            name: id.into(),
+        });
+        controller.set_homework_games(&app, 7, &games, false);
+        controller.update_homework_progress(&app, 7, "a", 2);
+        assert!(!rows.row_data(0).unwrap().completed);
+        controller.update_homework_progress(&app, 7, "b", 2);
+        assert_eq!(rows.row_data(0).unwrap().progress, "2 / 2");
+        assert!(rows.row_data(0).unwrap().completed);
+        controller.update_homework_progress(&app, 7, "b", 3);
+        assert!(!rows.row_data(0).unwrap().completed);
         assert!(!app.get_busy());
         release.send("旧课堂".to_owned()).unwrap();
         events.recv_timeout(Duration::from_secs(5)).unwrap()();

@@ -2,7 +2,7 @@
 use crate::{
     EducoderClient, Error, Result,
     cache::CacheStore,
-    models::{Game, Homework, HomeworkKind, Page, PageRequest, TaskDocument},
+    models::{Game, Homework, HomeworkKind, Page, PageRequest, TaskDetails, TaskDocument},
 };
 use std::{
     collections::HashMap,
@@ -94,6 +94,31 @@ impl WorkspaceCache {
         Ok(games)
     }
 
+    /// Load evaluation metadata without fetching any repository file contents.
+    /// The independent cache also survives a failed or interrupted code download.
+    pub async fn task_details(
+        &self,
+        homework_id: u64,
+        game: &str,
+        force: bool,
+    ) -> Result<TaskDetails> {
+        let key = format!("task-details:{homework_id}:{game}");
+        let _guard = self.lock(&key).await;
+        if !force
+            && let Some(cached) = self.store.get::<TaskDetails>(&key, TTL).await
+            && !cached.stale
+        {
+            return Ok(cached.value);
+        }
+        let generation = self.generation.load(Ordering::SeqCst);
+        let details = self.client.get_task_details(game, homework_id).await?;
+        let _guard = self.writes.lock().await;
+        if generation == self.generation.load(Ordering::SeqCst) {
+            self.store.put(&key, &details).await?;
+        }
+        Ok(details)
+    }
+
     pub async fn document(
         &self,
         homework_id: u64,
@@ -109,7 +134,7 @@ impl WorkspaceCache {
             return Ok(cached.value);
         }
         let generation = self.generation.load(Ordering::SeqCst);
-        let details = self.client.get_task_details(game, homework_id).await?;
+        let details = self.task_details(homework_id, game, force).await?;
         let mut files = Vec::new();
         let mut size = 0usize;
         for path in &details.task.editable_paths {

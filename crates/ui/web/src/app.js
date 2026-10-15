@@ -48,6 +48,7 @@ function request(action, payload = {}) {
 }
 function error(message = '') { $('error').textContent = message; $('error').hidden = !message; }
 function notice(message = '') { $('notice').textContent = message; $('notice').hidden = !message; }
+function refreshLoading(id, loading) { $(id).setAttribute('aria-busy', String(loading)); }
 function options(select, rows, value) {
   select.replaceChildren(...rows.map(row => { const option=document.createElement('option'); option.value=row.value; option.textContent=row.text; return option; }));
   if (value != null) select.value = value;
@@ -88,6 +89,7 @@ function updateAnswerButtons() {
   const active=!!file&&answerGame===state.game&&!answerLoading&&!answerImporting;
   $('copy-answer').disabled=!active;
   $('reload-answer').disabled=answerLoading||answerImporting||!state.task;
+  refreshLoading('reload-answer',answerLoading);
   const sameType=file&&target&&file.path.split('.').pop().toLowerCase()===target.path.split('.').pop().toLowerCase();
   $('import-answer').disabled=!active||state.busy||!sameType;
   $('insert-answer').disabled=!active||state.busy||!target||$('answer-code').selectionStart===$('answer-code').selectionEnd;
@@ -203,7 +205,10 @@ async function operation(action, payload={}) {
   if(syncPromise)await syncPromise;
   if(state.busy)return;
   if(action==='submit')celebrationArmed=true;
-  error(); state.busy=true; updateButtons(); $('operation-status').textContent=({save:'正在保存',submit:'正在评测',run:'正在编译运行',result:'正在获取结果',refresh:'正在更新题目',enter:'正在进入实训'})[action]??'正在处理';
+  error(); state.busy=true; updateButtons();
+  const refreshButton=({refresh:'refresh-task',result:'refresh-result'})[action];
+  if(refreshButton)refreshLoading(refreshButton,true);
+  $('operation-status').textContent=({save:'正在保存',submit:'正在评测',run:'正在编译运行',result:'正在获取结果',refresh:'正在更新题目',enter:'正在进入实训'})[action]??'正在处理';
   try {
     await flushDraft();
     const sent=allFiles();
@@ -214,7 +219,7 @@ async function operation(action, payload={}) {
     if(result?.can_submit != null && state.task) state.task.can_submit=result.can_submit;
     if(action==='run') showLocal(result);
   } catch(e) { if(action==='submit')celebrationArmed=false;if(state.task && (action==='submit'||e.message.includes('结果未知') || e.message.includes('仍在进行')))state.task.can_submit=false; error(e.message);if(action==='submit')setTab('remote'); }
-  finally {state.busy=false;$('operation-status').textContent='';updateButtons();if(!syncFailed&&hasChanges())scheduleSync();}
+  finally {if(refreshButton)refreshLoading(refreshButton,false);state.busy=false;$('operation-status').textContent='';updateButtons();if(!syncFailed&&hasChanges())scheduleSync();}
 }
 
 function resultOutput(value) {

@@ -120,6 +120,9 @@ impl WebHost {
                     size: LogicalSize::new(bounds.2 as f64, bounds.3 as f64).into(),
                 });
                 last_bounds = Some(bounds);
+                if visible {
+                    crate::rendering::repaint_all(&app);
+                }
             }
             if visible != last_visible && webview.set_visible(visible).is_ok() {
                 last_visible = visible;
@@ -159,7 +162,7 @@ impl WebHost {
                 last_celebration=app.get_celebration_id();celebration_visible=true;
                 let particles=app.get_confetti().iter().map(|p|serde_json::json!({"x":p.x,"drift":p.drift,"delay":p.delay,"speed":p.speed,"spin":p.spin,"size":p.size,"color":format!("#{:02x}{:02x}{:02x}",p.color.red(),p.color.green(),p.color.blue())})).collect::<Vec<_>>();
                 let scale=app.window().scale_factor();let size=app.window().size();
-                let data=serde_json::json!({"type":"celebration","id":last_celebration,"game":app.get_celebration_game().as_str(),"width":size.width as f32/scale,"height":size.height as f32/scale,"left":259,"top":46,"reduce_motion":app.get_reduce_motion(),"particles":particles});
+                let data=serde_json::json!({"type":"celebration","id":last_celebration,"game":app.get_celebration_game().as_str(),"width":size.width as f32/scale,"height":size.height as f32/scale,"left":app.get_web_x(),"top":46,"reduce_motion":app.get_reduce_motion(),"particles":particles});
                 let _=webview.evaluate_script(&format!("window.educoder.receive({data})"));
             }
             if celebration_visible&&!app.get_celebration_active(){celebration_visible=false;let _=webview.evaluate_script("window.educoder.receive({type:'stop-celebration'})");}

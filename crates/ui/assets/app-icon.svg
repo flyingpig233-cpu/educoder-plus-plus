@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 200 200" role="img" aria-labelledby="title desc">
+  <title id="title">Educoder++ application icon</title>
+  <desc id="desc">Ivory code brackets and two mint plus signs on a midnight navy rounded square. Reconstructed as editable vector paths from the generated concept.</desc>
+  <defs>
+    <linearGradient id="mint" x1="74" y1="77" x2="123" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#36dfb6"/>
+      <stop offset="1" stop-color="#25cbaa"/>
+    </linearGradient>
+  </defs>
+  <rect x="7" y="8" width="186" height="184" rx="36" fill="#030e2e"/>
+  <g id="code-brackets" fill="#fafaf7">
+    <path id="left-bracket" d="M92 40V59.5Q92 61.3 90.5 62.6L48.3 99Q43.6 103 48.6 107.1L79.1 131.5Q82.5 134.1 82.5 138.3V145.8Q82.5 151.1 78.4 147.8L35.2 114Q27.8 108.2 27.8 101.4Q27.8 95.4 34.1 89.9Z"/>
+    <path id="right-bracket" d="M119.6 55.4L162.8 89Q170.8 95.2 170.8 102Q170.8 109.6 163.5 115.7L107.7 163.5V145.1Q107.7 142.5 109.7 140.8L150.6 106.2Q156 101.8 150.7 97.6L116.7 70.5Q113.5 68 113.5 64.7V58.5Q113.5 51 119.6 55.4Z"/>
+  </g>
+  <path id="large-plus" fill="url(#mint)" d="M95.6 77H101.6Q105.5 77 105.5 81V96.4H119.4Q123.4 96.4 123.4 100.4V106.3Q123.4 110.1 119.4 110.1H105.5V124.5Q105.5 128.5 101.6 128.5H95.6Q91.8 128.5 91.8 124.5V110.1H77.4Q73.4 110.1 73.4 106.3V100.4Q73.4 96.4 77.4 96.4H91.8V81Q91.8 77 95.6 77Z"/>
+  <path id="small-plus" fill="#30d6b0" d="M150 38H154.8Q156.8 38 156.8 40.2V49.4H165.4Q167.5 49.4 167.5 51.5V55.8Q167.5 58 165.4 58H156.8V66.9Q156.8 69 154.8 69H150Q148 69 148 66.9V58H139.3Q137.2 58 137.2 55.8V51.5Q137.2 49.4 139.3 49.4H148V40.2Q148 38 150 38Z"/>
+</svg>

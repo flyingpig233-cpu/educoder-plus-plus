@@ -57,6 +57,15 @@ pub struct WindowChrome {
     _frame: std::rc::Rc<std::cell::RefCell<Option<native_frame::FrameGuard>>>,
 }
 
+/// Decodes the bundled application icon into a winit bitmap. Returns `None`
+/// when the PNG cannot be read, in which case the window keeps the default icon.
+fn app_icon() -> Option<slint::winit_030::winit::window::Icon> {
+    const ICON: &[u8] = include_bytes!("../assets/app-icon.png");
+    let icon = image::load_from_memory(ICON).ok()?.into_rgba8();
+    let (width, height) = icon.dimensions();
+    slint::winit_030::winit::window::Icon::from_rgba(icon.into_raw(), width, height).ok()
+}
+
 /// Select before creating any Slint window. Winit's transparent Windows mode
 /// enables DWM blur, which can expose zero-alpha pixels from software surfaces.
 pub fn initialize_backend() -> Result<(), slint::PlatformError> {
@@ -74,9 +83,14 @@ impl WindowChrome {
     pub fn attach(app: &AppWindow) -> Self {
         app.set_confetti(slint::ModelRc::new(slint::VecModel::from(confetti())));
         app.set_reduce_motion(reduce_motion());
+        #[cfg(windows)]
+        let transition = std::rc::Rc::new(std::cell::Cell::new(None::<Instant>));
         let weak = app.as_weak();
         app.on_drag_window(move || {
             if let Some(app) = weak.upgrade() {
+                if app.get_window_transitioning() {
+                    return;
+                }
                 app.window().with_winit_window(|window| {
                     let _ = window.drag_window();
                 });
@@ -90,16 +104,49 @@ impl WindowChrome {
             }
         });
         let weak = app.as_weak();
+        #[cfg(windows)]
+        let maximize_transition = transition.clone();
         app.on_maximize_window(move || {
             if let Some(app) = weak.upgrade() {
-                app.window()
-                    .with_winit_window(|window| window.set_maximized(!window.is_maximized()));
+                if app.get_window_transitioning() {
+                    return;
+                }
+                app.window().with_winit_window(|window| {
+                    if window.fullscreen().is_some() {
+                        return;
+                    }
+                    app.invoke_hide_account_menu();
+                    #[cfg(windows)]
+                    {
+                        native_frame::prepare_transition(window, !app.get_reduce_motion());
+                        if !app.get_reduce_motion() {
+                            maximize_transition.set(Some(Instant::now()));
+                            app.set_window_transitioning(true);
+                        }
+                    }
+                    window.set_maximized(!window.is_maximized());
+                    #[cfg(windows)]
+                    if app.get_reduce_motion() {
+                        native_frame::finish_transition(window);
+                    }
+                    app.set_window_maximized(window.is_maximized());
+                    crate::rendering::repaint_all(&app);
+                });
             }
         });
         let weak = app.as_weak();
         app.on_resize_window(move |direction| {
             if let Some(app) = weak.upgrade() {
                 app.window().with_winit_window(|window| {
+                    // The UI state is polled, so recheck the native state before
+                    // starting a resize. Windows must not enter its resize loop
+                    // while maximized or fullscreen.
+                    if app.get_window_transitioning()
+                        || window.is_maximized()
+                        || window.fullscreen().is_some()
+                    {
+                        return;
+                    }
                     let direction = match direction {
                         0 => ResizeDirection::West,
                         1 => ResizeDirection::East,
@@ -112,6 +159,9 @@ impl WindowChrome {
         });
         let weak = app.as_weak();
         let timer = Timer::default();
+        // The winit window only exists once the event loop runs, so the taskbar
+        // and Alt+Tab icon is applied on the first timer tick.
+        let window_icon = std::cell::Cell::new(app_icon());
         let mut previous = None;
         let mut previous_page = app.get_page();
         let mut page_started = None::<Instant>;
@@ -153,6 +203,22 @@ impl WindowChrome {
                 }
             }
             app.window().with_winit_window(|window| {
+                if let Some(icon) = window_icon.take() {
+                    window.set_window_icon(Some(icon));
+                }
+                #[cfg(windows)]
+                {
+                    if let Some(started) = transition.get()
+                        && (app.get_reduce_motion()
+                            || started.elapsed() >= Duration::from_millis(250))
+                    {
+                        transition.set(None);
+                        app.set_window_transitioning(false);
+                        native_frame::finish_transition(window);
+                        round_window(window);
+                        crate::rendering::repaint_all(&app);
+                    }
+                }
                 let dark = match app.get_theme_mode() {
                     1 => false,
                     2 => true,
@@ -175,12 +241,15 @@ impl WindowChrome {
                     size.height,
                     window.scale_factor(),
                     window.is_maximized(),
+                    window.fullscreen().is_some(),
                 );
                 if previous != Some(state) {
                     app.set_window_maximized(state.3);
+                    app.set_window_fullscreen(state.4);
                     #[cfg(windows)]
-                    if native_frame.borrow().is_some() {
+                    if native_frame.borrow().is_some() && !app.get_window_transitioning() {
                         round_window(window);
+                        crate::rendering::repaint_all(&app);
                     }
                     previous = Some(state);
                 }
@@ -202,6 +271,13 @@ mod native_frame {
     };
     use windows_sys::Win32::{
         Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        Graphics::{
+            Dwm::{
+                DWMNCRP_USEWINDOWSTYLE, DWMWA_NCRENDERING_POLICY, DWMWA_TRANSITIONS_FORCEDISABLED,
+                DwmSetWindowAttribute,
+            },
+            Gdi::SetWindowRgn,
+        },
         UI::{
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::{
@@ -214,6 +290,48 @@ mod native_frame {
 
     const SUBCLASS_ID: usize = 0x45445543;
     pub(super) struct FrameGuard(HWND);
+
+    pub fn prepare_transition(window: &Window, animate: bool) {
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return;
+        };
+        let hwnd = handle.hwnd.get() as HWND;
+        unsafe {
+            SetWindowSubclass(hwnd, Some(frame_proc), SUBCLASS_ID, usize::from(animate));
+            if animate {
+                let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                SetWindowLongW(hwnd, GWL_STYLE, (style | WS_CAPTION) as i32);
+            }
+            let disabled = i32::from(!animate);
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_TRANSITIONS_FORCEDISABLED as u32,
+                (&disabled as *const i32).cast(),
+                std::mem::size_of::<i32>() as u32,
+            );
+            // A fixed window region clips DWM's transformed surface. Restore
+            // corners after the transition instead of resizing the region per frame.
+            SetWindowRgn(hwnd, std::ptr::null_mut(), 0);
+        }
+    }
+
+    pub fn finish_transition(window: &Window) {
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return;
+        };
+        let hwnd = handle.hwnd.get() as HWND;
+        unsafe {
+            SetWindowSubclass(hwnd, Some(frame_proc), SUBCLASS_ID, 0);
+            let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+            SetWindowLongW(hwnd, GWL_STYLE, (style & !WS_CAPTION) as i32);
+        }
+    }
 
     impl FrameGuard {
         pub fn install(window: &Window) -> Option<Self> {
@@ -228,7 +346,16 @@ mod native_frame {
             }
             unsafe {
                 let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                // The compositor caption style is only needed while transitioning.
+                // Removing it at rest prevents classic frame painting on Windows 10.
                 SetWindowLongW(hwnd, GWL_STYLE, (style & !WS_CAPTION) as i32);
+                let policy = DWMNCRP_USEWINDOWSTYLE;
+                DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_NCRENDERING_POLICY as u32,
+                    (&policy as *const i32).cast(),
+                    std::mem::size_of::<i32>() as u32,
+                );
                 SetWindowPos(
                     hwnd,
                     std::ptr::null_mut(),
@@ -257,14 +384,17 @@ mod native_frame {
         wparam: WPARAM,
         lparam: LPARAM,
         id: usize,
-        _: usize,
+        animating: usize,
     ) -> LRESULT {
         match message {
-            // Winit reapplies its native styles when maximizing/restoring. Keep
-            // WS_THICKFRAME and the system commands, but never restore a caption.
+            // Retain compositor eligibility when Winit reapplies its styles.
             WM_STYLECHANGING if wparam as i32 == GWL_STYLE => unsafe {
                 if let Some(style) = (lparam as *mut STYLESTRUCT).as_mut() {
-                    style.styleNew &= !WS_CAPTION;
+                    if animating != 0 {
+                        style.styleNew |= WS_CAPTION;
+                    } else {
+                        style.styleNew &= !WS_CAPTION;
+                    }
                 }
                 DefSubclassProc(hwnd, message, wparam, lparam)
             },
@@ -301,8 +431,8 @@ fn round_window(window: &slint::winit_030::winit::window::Window) {
     }
     let hwnd = handle.hwnd.get() as *mut std::ffi::c_void;
     unsafe {
-        if window.is_maximized() {
-            SetWindowRgn(hwnd, std::ptr::null_mut(), 1);
+        if window.is_maximized() || window.fullscreen().is_some() {
+            SetWindowRgn(hwnd, std::ptr::null_mut(), 0);
             return;
         }
         let diameter = (24.0 * window.scale_factor()).round() as i32;
@@ -314,7 +444,7 @@ fn round_window(window: &slint::winit_030::winit::window::Window) {
             diameter,
             diameter,
         );
-        if !region.is_null() && SetWindowRgn(hwnd, region, 1) == 0 {
+        if !region.is_null() && SetWindowRgn(hwnd, region, 0) == 0 {
             // On success Windows owns the region. Only failed transfers are freed here.
             DeleteObject(region);
         }

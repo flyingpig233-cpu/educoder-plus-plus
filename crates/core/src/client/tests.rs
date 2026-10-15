@@ -451,6 +451,66 @@ async fn prefetch_is_shared_with_foreground_and_never_enters_an_instance() {
 }
 
 #[tokio::test]
+async fn evaluation_metadata_is_available_before_code_and_survives_code_failure() {
+    use crate::workspace::WorkspaceCache;
+    let (server, client) = client().await;
+    let temp = tempfile::tempdir().unwrap();
+    let store = crate::cache::CacheStore::at(temp.path(), "progress-test").unwrap();
+    let workspace = WorkspaceCache::new(client.clone(), store.clone());
+    for game in ["g1", "g2"] {
+        Mock::given(path(format!("/api/tasks/{game}.json")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(task_fixture(2)))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    // The entire visible page's metadata can be obtained without requesting
+    // even one code file, including when that file service is unavailable.
+    for game in ["g1", "g2"] {
+        assert_eq!(
+            workspace
+                .task_details(9, game, false)
+                .await
+                .unwrap()
+                .evaluation
+                .status,
+            2
+        );
+    }
+    assert!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| !r.url.path().contains("rep_content"))
+    );
+    Mock::given(path("/api/tasks/g1/rep_content.json"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    assert!(workspace.document(9, "g1", false).await.is_err());
+    // Reopening the workspace still restores passed status independently
+    // of a complete document cache (and without another metadata request).
+    let reopened = WorkspaceCache::new(client, store.clone());
+    assert_eq!(
+        reopened
+            .task_details(9, "g1", false)
+            .await
+            .unwrap()
+            .evaluation
+            .status,
+        2
+    );
+    assert!(
+        store
+            .get::<TaskDocument>("task:9:g1", Duration::MAX)
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn a_prefetch_started_before_a_write_cannot_replace_the_new_cache() {
     use crate::workspace::WorkspaceCache;
     let (server, client) = client().await;

@@ -21,6 +21,26 @@ struct Cookie {
     value: String,
 }
 
+/// Cookies obtained from a user-authorized browser login, including HttpOnly
+/// cookies. Domain, path and expiry are preserved rather than broadened.
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct BrowserCookie {
+    pub domain: String,
+    pub include_subdomains: bool,
+    pub path: String,
+    pub secure: bool,
+    /// Unix seconds, or zero for a browser-session cookie.
+    pub expires: u64,
+    pub name: String,
+    pub value: String,
+}
+
+impl fmt::Debug for BrowserCookie {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("BrowserCookie([REDACTED])")
+    }
+}
+
 /// A scoped browser session. Debug output is always redacted.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -34,6 +54,36 @@ impl fmt::Debug for Session {
 }
 
 impl Session {
+    pub fn from_browser_cookies(input: &[BrowserCookie]) -> Result<Self> {
+        let now = unix_seconds();
+        let mut cookies = Vec::new();
+        for item in input {
+            let domain = item.domain.trim_start_matches('.').to_ascii_lowercase();
+            if domain != "educoder.net" && !domain.ends_with(".educoder.net") {
+                continue;
+            }
+            if item.expires != 0 && item.expires <= now {
+                continue;
+            }
+            if !item.path.starts_with('/') || item.path.contains(['\r', '\n', '\t']) {
+                return Err(Error::InvalidCookie { line: 0 });
+            }
+            validate_pair(&item.name, &item.value)?;
+            cookies.push(Cookie {
+                domain,
+                include_subdomains: item.include_subdomains,
+                path: item.path.clone(),
+                secure: item.secure,
+                expires: item.expires,
+                name: item.name.clone(),
+                value: item.value.clone(),
+            });
+        }
+        let session = Self { cookies };
+        session
+            .headers_for(&Url::parse("https://data.educoder.net/api/").expect("constant URL"))?;
+        Ok(session)
+    }
     /// Opaque session namespace, suitable for isolating cached data and drafts.
     pub fn cache_namespace(&self) -> Result<String> {
         let (_, auth) =
@@ -198,6 +248,79 @@ fn unix_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn browser_cookie(domain: &str, name: &str, value: &str) -> BrowserCookie {
+        BrowserCookie {
+            domain: domain.into(),
+            include_subdomains: domain.starts_with('.'),
+            path: "/".into(),
+            secure: true,
+            expires: 0,
+            name: name.into(),
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn browser_import_preserves_scope_expiry_and_redacts_secrets() {
+        let mut expired = browser_cookie("data.educoder.net", "old", "expired-secret");
+        expired.expires = 1;
+        let mut scoped = browser_cookie(".educoder.net", "private", "path-secret");
+        scoped.path = "/api/private".into();
+        let input = vec![
+            browser_cookie("data.educoder.net", "_educoder_session", "browser-secret"),
+            browser_cookie("www.educoder.net", "website", "website-secret"),
+            browser_cookie("educoder.net.evil.example", "bad", "external-secret"),
+            expired,
+            scoped,
+        ];
+        assert!(!format!("{input:?}").contains("secret"));
+        let session = Session::from_browser_cookies(&input).unwrap();
+        let url = Url::parse("https://data.educoder.net/api/tasks/g1.json").unwrap();
+        let (cookie, auth) = session.headers_for(&url).unwrap();
+        assert_eq!(cookie, "_educoder_session=browser-secret");
+        assert_eq!(auth, "browser-secret");
+        assert!(
+            session
+                .headers_for(&Url::parse("https://www.educoder.net/api/").unwrap())
+                .is_err()
+        );
+        assert!(
+            session
+                .headers_for(&Url::parse("http://data.educoder.net/api/").unwrap())
+                .is_err()
+        );
+        assert_eq!(
+            session.headers_for(&url).unwrap(),
+            Session::decode(&session.encode().unwrap())
+                .unwrap()
+                .headers_for(&url)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn browser_import_rejects_injection_and_missing_session() {
+        for input in [
+            vec![],
+            vec![browser_cookie(
+                "www.educoder.net",
+                "_educoder_session",
+                "website-only",
+            )],
+            vec![browser_cookie(
+                "data.educoder.net",
+                "_educoder_session",
+                "secret\r\nX-Evil: yes",
+            )],
+            vec![browser_cookie("data.educoder.net", "_educoder_session", "")],
+        ] {
+            assert!(Session::from_browser_cookies(&input).is_err());
+        }
+        let mut invalid = browser_cookie("data.educoder.net", "_educoder_session", "secret");
+        invalid.path = "/api\n".into();
+        assert!(Session::from_browser_cookies(&[invalid]).is_err());
+    }
 
     #[test]
     fn import_scopes_expiry_and_http_only() {

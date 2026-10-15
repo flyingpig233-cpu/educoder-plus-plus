@@ -21,6 +21,14 @@ pub(super) struct WorkbenchState {
     pending_write: bool,
 }
 
+impl WorkbenchState {
+    pub(super) fn homework_progress_status(&self, homework: u64, game: &str) -> Option<i32> {
+        let document = self.document.as_ref()?;
+        (self.homework.as_ref()?.id == homework && document.details.task.game_identifier == game)
+            .then_some(document.details.evaluation.status)
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct TextFile {
     path: String,
@@ -75,7 +83,7 @@ impl Controller {
         version
     }
 
-    pub(super) fn prefetch_homeworks(self: &Arc<Self>, homeworks: Vec<Homework>) {
+    pub(super) fn prefetch_homeworks(self: &Arc<Self>, homeworks: Vec<Homework>, force: bool) {
         let version = self.cancel_prefetch();
         if homeworks.is_empty() {
             return;
@@ -83,17 +91,146 @@ impl Controller {
         let Some(workspace) = self.workspace_cache() else {
             return;
         };
-        let (course, current_page) = {
+        let (course, current_page, client, cache) = {
             let state = self.state.lock().expect("UI state");
-            (state.course_id, state.page.max(1))
+            (
+                state.course_id,
+                state.page.max(1),
+                state.client.clone(),
+                state.cache.clone(),
+            )
         };
         let c = self.clone();
         let ui = self.ui.clone();
         let job = self.runtime.spawn(async move {
+            // Restore every visible row from disk before issuing any network
+            // request. A slow first homework must not delay cached green rows.
+            if let Some(store) = &cache {
+                for homework in &homeworks {
+                    let Some(cached) = store
+                        .get::<Vec<Game>>(&format!("games:{}", homework.id), Duration::MAX)
+                        .await
+                    else {
+                        continue;
+                    };
+                    let games = cached.value;
+                    if games.is_empty() {
+                        continue;
+                    }
+                    let mut statuses = Vec::new();
+                    for game in &games {
+                        let details = if let Some(cached) = store
+                            .get::<TaskDetails>(
+                                &format!("task-details:{}:{}", homework.id, game.identifier),
+                                Duration::MAX,
+                            )
+                            .await
+                        {
+                            Some(cached.value)
+                        } else {
+                            store
+                                .get::<Document>(
+                                    &format!("task:{}:{}", homework.id, game.identifier),
+                                    Duration::MAX,
+                                )
+                                .await
+                                .map(|cached| cached.value.details)
+                        };
+                        if let Some(details) = details {
+                            statuses.push((game.identifier.clone(), details.evaluation.status));
+                        }
+                    }
+                    let c2 = c.clone();
+                    let id = homework.id;
+                    let _ = ui.upgrade_in_event_loop(move |app| {
+                        if c2.prefetch_version.load(Ordering::SeqCst) != version {
+                            return;
+                        }
+                        // A live editor/in-memory result is newer than disk.
+                        if c2
+                            .state
+                            .lock()
+                            .expect("UI state")
+                            .homework_progress
+                            .contains_key(&id)
+                        {
+                            return;
+                        }
+                        c2.set_homework_games(&app, id, &games, false);
+                        for (game, status) in statuses {
+                            c2.update_homework_progress(&app, id, &game, status);
+                        }
+                    });
+                }
+            }
+            // Priority pass: finish the visible page's evaluation metadata
+            // before any code downloads or pagination into other pages.
+            for homework in &homeworks {
+                while c.operation.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                let games = match workspace.games(homework, force).await {
+                    Ok(games) => games,
+                    Err(Error::SessionExpired) => return,
+                    Err(_) => continue,
+                };
+                if games.is_empty() {
+                    if let (Some(client), Some(shixun)) = (&client, &homework.shixun_identifier) {
+                        let instance = client.get_shixun(shixun).await.ok();
+                        if let Ok(challenges) = client.get_challenges(shixun).await {
+                            let confirmed = homework.myshixun_identifier.is_none()
+                                && instance.is_some_and(|instance| instance.myshixun_id.is_none());
+                            let total = challenges.len();
+                            let c2 = c.clone();
+                            let id = homework.id;
+                            let _ = ui.upgrade_in_event_loop(move |app| {
+                                if c2.prefetch_version.load(Ordering::SeqCst) == version {
+                                    c2.set_unstarted_progress(&app, id, total, confirmed);
+                                }
+                            });
+                        }
+                    }
+                    continue;
+                }
+                let c2 = c.clone();
+                let id = homework.id;
+                let rows = games.clone();
+                let _ = ui.upgrade_in_event_loop(move |app| {
+                    if c2.prefetch_version.load(Ordering::SeqCst) == version {
+                        // Keep known green rows visible while revalidating.
+                        c2.set_homework_games(&app, id, &rows, false);
+                    }
+                });
+                for game in games {
+                    while c.operation.load(Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    let details = match workspace.task_details(id, &game.identifier, force).await {
+                        Ok(details) => details,
+                        Err(Error::SessionExpired) => return,
+                        Err(_) => continue,
+                    };
+                    let c2 = c.clone();
+                    let _ = ui.upgrade_in_event_loop(move |app| {
+                        if c2.prefetch_version.load(Ordering::SeqCst) == version {
+                            c2.update_homework_progress(
+                                &app,
+                                id,
+                                &game.identifier,
+                                details.evaluation.status,
+                            );
+                        }
+                    });
+                }
+            }
             let mut loaded = 0;
             let mut failed = 0;
             let mut next_page = 1;
             let mut more_pages = !(current_page == 1 && homeworks.len() < 20);
+            let refresh_ids = homeworks
+                .iter()
+                .map(|homework| homework.id)
+                .collect::<std::collections::HashSet<_>>();
             let mut queue = std::collections::VecDeque::from(homeworks);
             let mut seen = std::collections::HashSet::new();
             loop {
@@ -132,6 +269,10 @@ impl Controller {
                 if !seen.insert(homework.id) {
                     continue;
                 }
+                // A manual refresh revalidates the visible page. Other pages
+                // continue their ordinary cached prefetch instead of redownloading
+                // every code file in the course.
+                let force = force && refresh_ids.contains(&homework.id);
                 while c.operation.load(Ordering::SeqCst) {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
@@ -143,21 +284,59 @@ impl Controller {
                         continue;
                     }
                 };
+                if games.is_empty() {
+                    if let (Some(client), Some(shixun)) = (&client, &homework.shixun_identifier) {
+                        let instance = client.get_shixun(shixun).await.ok();
+                        if let Ok(challenges) = client.get_challenges(shixun).await {
+                            let total = challenges.len();
+                            let confirmed = homework.myshixun_identifier.is_none()
+                                && instance.is_some_and(|instance| instance.myshixun_id.is_none());
+                            let c2 = c.clone();
+                            let id = homework.id;
+                            let _ = ui.upgrade_in_event_loop(move |app| {
+                                if c2.prefetch_version.load(Ordering::SeqCst) == version {
+                                    c2.set_unstarted_progress(&app, id, total, confirmed);
+                                }
+                            });
+                        }
+                    }
+                } else {
+                    let c2 = c.clone();
+                    let id = homework.id;
+                    let progress_games = games.clone();
+                    let _ = ui.upgrade_in_event_loop(move |app| {
+                        if c2.prefetch_version.load(Ordering::SeqCst) == version {
+                            c2.set_homework_games(&app, id, &progress_games, false);
+                        }
+                    });
+                }
                 for game in games {
                     while c.operation.load(Ordering::SeqCst) {
                         tokio::time::sleep(Duration::from_millis(500)).await;
                     }
-                    match workspace
-                        .document(homework.id, &game.identifier, false)
+                    let status = match workspace
+                        .document(homework.id, &game.identifier, force)
                         .await
                     {
-                        Ok(_) => loaded += 1,
+                        Ok(document) => {
+                            loaded += 1;
+                            Some(document.details.evaluation.status)
+                        }
                         Err(Error::SessionExpired) => return,
-                        Err(_) => failed += 1,
-                    }
+                        Err(_) => {
+                            failed += 1;
+                            None
+                        }
+                    };
                     let c2 = c.clone();
+                    let id = homework.id;
+                    let priority_loaded = refresh_ids.contains(&id);
+                    let game_id = game.identifier.clone();
                     let _ = ui.upgrade_in_event_loop(move |app| {
                         if c2.prefetch_version.load(Ordering::SeqCst) == version {
+                            if let Some(status) = status.filter(|_| !priority_loaded) {
+                                c2.update_homework_progress(&app, id, &game_id, status);
+                            }
                             app.set_cache_status(
                                 format!(
                                     "后台已缓存 {loaded} 道题{}",
@@ -356,6 +535,9 @@ impl Controller {
                 .filter(|id| games.iter().any(|g| g.identifier == *id))
                 .or_else(|| games.first().map(|g| g.identifier.clone()))
         };
+        if !games.is_empty() {
+            self.set_homework_games(app, homework.id, &games, false);
+        }
         self.send_web(app,json!({"type":"homework","title":homework.name,"games":games,"game":game,"can_enter":games.is_empty()}));
         if let Some(game) = game
             && self.workbench.lock().expect("workbench").document.is_none()
@@ -519,13 +701,24 @@ impl Controller {
         } = options;
         let conflict = draft_conflicts(&document, &draft);
         let message = document_message(&document, &draft, cached, pending, conflict, force);
-        {
+        let progress = {
             let mut state = self.workbench.lock().expect("workbench");
             if state.version != version {
                 return;
             }
+            let progress = state.homework.as_ref().map(|homework| {
+                (
+                    homework.id,
+                    document.details.task.game_identifier.clone(),
+                    document.details.evaluation.status,
+                )
+            });
             state.document = Some(document);
             state.pending_write = pending;
+            progress
+        };
+        if let Some((id, game, status)) = progress {
+            self.update_homework_progress(app, id, &game, status);
         }
         self.send_web(app, message);
     }
@@ -827,7 +1020,13 @@ impl Controller {
     fn perform_operation(self: &Arc<Self>, message: Message) {
         let Some(id) = message.id else { return };
         let Some(app) = self.ui.upgrade() else { return };
-        let document = self.workbench.lock().expect("workbench").document.clone();
+        let (document, homework_id) = {
+            let state = self.workbench.lock().expect("workbench");
+            (
+                state.document.clone(),
+                state.homework.as_ref().map(|h| h.id),
+            )
+        };
         let (client, cache) = {
             let state = self.state.lock().expect("UI state");
             (state.client.clone(), state.cache.clone())
@@ -873,6 +1072,12 @@ impl Controller {
                     let details = client
                         .get_evaluation(&previous)
                         .await.map_err(|error| if previous.evaluation.status==1 && !matches!(error,Error::SessionExpired) {Error::EvaluationRead(Box::new(error))}else{error})?;
+                    if let (Some(store), Some(homework_id)) = (&cache, homework_id) {
+                        let _ = store.put(
+                            &format!("task-details:{homework_id}:{}", message.context),
+                            &details,
+                        ).await;
+                    }
                     if details.evaluation.status != 1
                         && let Some(store) = &cache {
                             store
@@ -983,6 +1188,12 @@ impl Controller {
                     details
                 };
                 if let Some(store) = &cache {
+                    if let Some(homework_id) = homework_id {
+                        let _ = store.put(
+                            &format!("task-details:{homework_id}:{}", message.context),
+                            &result,
+                        ).await;
+                    }
                     if result.evaluation.status != 1 { store
                         .remove(&format!("pending:{}", message.context))
                         .await?; }
@@ -1030,6 +1241,14 @@ impl Controller {
                                 }
                             }
                         state.pending_write = state.document.as_ref().is_some_and(|d| d.details.evaluation.status == 1);
+                    }
+                    let progress = {
+                        let state = c.workbench.lock().expect("workbench");
+                        state.homework.as_ref().zip(state.document.as_ref()).map(|(homework, doc)|
+                            (homework.id, doc.details.task.game_identifier.clone(), doc.details.evaluation.status))
+                    };
+                    if let Some((homework, game, status)) = progress {
+                        c.update_homework_progress(&app, homework, &game, status);
                     }
                     c.reply(&app, &id, Ok(value));
                 }

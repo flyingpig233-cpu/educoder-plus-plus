@@ -13,5 +13,5 @@ pub mod workspace;
 
 pub use client::{ClientOptions, EducoderClient};
 pub use error::{Error, Result};
-pub use session::Session;
+pub use session::{BrowserCookie, Session};
 pub use vault::SessionVault;

@@ -5,6 +5,7 @@ cookies*.txt
 .env.*
 *.log
 /exports/
+/educoder-answer/
 node_modules/
 crates/ui/web/dist/
 crates/ui/web/test-results/

@@ -19,7 +19,7 @@
   <div id="conflict" hidden>远端代码已发生变化，你的本地草稿已保留。<button id="keep-draft">保留草稿并继续</button><button id="discard-draft">使用远端版本</button></div>
   <main id="workspace">
     <section class="problem-pane">
-      <div class="section-heading">题目描述 <span><button id="answers">查看答案</button> <button id="refresh-task">刷新题目</button></span></div>
+      <div class="section-heading">题目描述 <span class="heading-actions"><button id="answers">查看答案</button><button id="refresh-task" class="refresh-button" aria-label="刷新题目" title="刷新题目"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-.9L20 9M4 15l2.3 2.9A7 7 0 0 0 17.9 17"/></svg></button></span></div>
       <article id="description" class="markdown"><p class="muted">选择作业后，在这里阅读题目。</p></article>
       <div id="enter-panel" hidden><p>此实训尚未创建个人实例。</p><button id="enter">进入实训</button></div>
     </section>
@@ -43,7 +43,7 @@
           <div class="sample-inputs"><label>标准输入<textarea id="stdin" placeholder="可留空；数据通过 stdin 传入"></textarea></label><label>预期输出（可选）<textarea id="expected" placeholder="留空时仅运行并显示输出"></textarea></label></div>
           <div id="local-results" class="output" aria-live="polite"><span class="muted">使用本机编译器运行当前代码；运行时限 5 秒。</span></div>
         </div>
-        <div id="remote-tab" class="tab-content" hidden><div class="sample-toolbar"><span id="remote-status">尚未获取评测结果</span><button id="refresh-result">刷新结果</button></div><div id="compile-output"></div><div id="test-cases"></div></div>
+        <div id="remote-tab" class="tab-content" hidden><div class="sample-toolbar"><span id="remote-status">尚未获取评测结果</span><button id="refresh-result" class="refresh-button" aria-label="刷新结果" title="刷新结果"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-.9L20 9M4 15l2.3 2.9A7 7 0 0 0 17.9 17"/></svg></button></div><div id="compile-output"></div><div id="test-cases"></div></div>
       </section>
     </section>
   </main>
@@ -51,7 +51,7 @@
     <div class="answer-heading"><strong id="answer-title">题目答案</strong><button id="close-answer" aria-label="关闭答案">×</button></div>
     <p id="answer-status" role="status"></p>
     <p class="muted">来源：github.com/flyingpig233-cpu/educoder-answer。仓库答案为本地验证版本，平台隐藏测试结果以实际评测为准。</p>
-    <div class="sample-toolbar"><select id="answer-files" aria-label="选择答案文件"></select><button id="reload-answer">重新查找</button><button id="copy-answer">复制答案代码</button></div>
+    <div class="sample-toolbar"><select id="answer-files" aria-label="选择答案文件"></select><button id="reload-answer" class="refresh-button" aria-label="重新查找答案" title="重新查找答案"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-.9L20 9M4 15l2.3 2.9A7 7 0 0 0 17.9 17"/></svg></button><button id="copy-answer">复制答案代码</button></div>
     <textarea id="answer-code" readonly aria-label="答案代码" spellcheck="false"></textarea>
     <p class="muted">完整程序只可导入同类型代码文件；头文件或填空题请选取答案片段后插入。导入覆盖目标文件，可用 Ctrl+Z 撤销；代码会后台同步，不会自动提交评测。</p>
     <div class="sample-toolbar"><label>导入目标<select id="answer-target" aria-label="答案导入目标"></select></label><button id="import-answer">覆盖目标文件</button><button id="insert-answer">插入所选片段</button></div>

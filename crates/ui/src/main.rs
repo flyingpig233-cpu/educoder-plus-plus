@@ -10,6 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let controller = Controller::bind(&app, runtime.handle().clone());
     controller.initialize();
     let _web_host = educoder_ui::webview::WebHost::attach(&app, controller.clone());
+    let _login_host = educoder_ui::login::LoginHost::attach(&app, controller.clone());
     let _chrome = educoder_ui::chrome::WindowChrome::attach(&app);
     let close_controller = controller.clone();
     app.window().on_close_requested(move || {
