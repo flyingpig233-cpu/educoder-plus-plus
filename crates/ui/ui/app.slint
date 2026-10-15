@@ -61,7 +61,7 @@ component ActionButton inherits Rectangle {
 }
 
 component WindowButton inherits Rectangle {
-    in property <string> glyph;
+    in property <image> icon;
     in property <string> label;
     in property <bool> close-button: false;
     callback clicked;
@@ -69,7 +69,11 @@ component WindowButton inherits Rectangle {
     background: touch.has-hover || focus.has-focus ? (root.close-button ? #c42b1c : Theme.hover) : transparent;
     accessible-role: button; accessible-label: root.label;
     accessible-action-default => { root.clicked(); }
-    Text { text: root.glyph; font-size: 15px; color: (touch.has-hover || focus.has-focus) && root.close-button ? white : Theme.text; horizontal-alignment: center; vertical-alignment: center; }
+    Image {
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        width: 12px; height: 12px; source: root.icon; image-fit: contain;
+        colorize: (touch.has-hover || focus.has-focus) && root.close-button ? white : Theme.text;
+    }
     focus := FocusScope {
         key-pressed(e) => { if e.text == " " || e.text == "\n" { root.clicked(); return accept; } return reject; }
     }
@@ -203,9 +207,9 @@ export component AppWindow inherits Window {
               double-clicked => { root.maximize-window(); }
             }
           }
-          WindowButton { glyph: "—"; label: "最小化"; clicked => { root.minimize-window(); } }
-          WindowButton { glyph: root.window-maximized ? "❐" : "□"; label: root.window-maximized ? "还原" : "最大化"; clicked => { root.maximize-window(); } }
-          WindowButton { glyph: "×"; label: "关闭"; close-button: true; clicked => { root.close-window(); } }
+          WindowButton { icon: @image-url("../assets/window-minimize.svg"); label: "最小化"; clicked => { root.minimize-window(); } }
+          WindowButton { icon: root.window-maximized ? @image-url("../assets/window-restore.svg") : @image-url("../assets/window-maximize.svg"); label: root.window-maximized ? "还原" : "最大化"; clicked => { root.maximize-window(); } }
+          WindowButton { icon: @image-url("../assets/window-close.svg"); label: "关闭"; close-button: true; clicked => { root.close-window(); } }
         }
       }
       HorizontalLayout {

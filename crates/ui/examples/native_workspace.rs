@@ -35,6 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let chrome_passed = Rc::new(Cell::new(false));
     let native_passed = chrome_passed.clone();
     let mut stage = 0;
+    let mut settle_ticks = 0;
     tick.start(TimerMode::Repeated, Duration::from_millis(100), move || {
         let Some(app) = weak.upgrade() else { return };
         match stage {
@@ -47,30 +48,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.invoke_hide_account_menu();
                 assert!(!app.get_account_menu_open());
                 #[cfg(windows)]
+                capture_title_bar(&app, "titlebar-native-normal");
+                #[cfg(windows)]
                 assert!(rounded_region(&app));
                 app.invoke_maximize_window();
                 stage = 2;
             }
             2 if app.get_window_maximized() => {
+                settle_ticks += 1;
+                if settle_ticks < 3 { return; }
+                settle_ticks = 0;
+                #[cfg(windows)]
+                capture_title_bar(&app, "titlebar-native-maximized");
                 #[cfg(windows)]
                 assert!(!rounded_region(&app));
                 app.invoke_maximize_window();
                 stage = 3;
             }
             3 if !app.get_window_maximized() => {
+                settle_ticks += 1;
+                if settle_ticks < 3 { return; }
+                settle_ticks = 0;
+                #[cfg(windows)]
+                capture_title_bar(&app, "titlebar-native-restored");
                 #[cfg(windows)]
                 assert!(rounded_region(&app));
                 println!("Native avatar menu / rounded window / maximize-restore: true");
                 native_passed.set(true);
-                app.invoke_show_account_menu();
+                app.set_dark_mode(false);
                 stage = 4;
+            }
+            4 => {
+                settle_ticks += 1;
+                if settle_ticks < 3 { return; }
+                #[cfg(windows)]
+                capture_title_bar(&app, "titlebar-native-light");
+                app.invoke_show_account_menu();
+                stage = 5;
             }
             _ => {}
         }
-        if stage == 4 && browser_passed.get() {
+        if stage == 5 && browser_passed.get() {
             let _ = slint::quit_event_loop();
         }
-        if !sent && stage == 4 {
+        if !sent && stage == 5 {
             sent = host.evaluate_when_ready(r#"
                 window.educoder.receive({type:'task', task:{game_identifier:'native-demo',title:'Native preview',description_markdown:'## Markdown ready\n<script>window.hacked=true</script>',can_submit:true},files:[{path:'main.rs',content:'fn main() {}',read_only:false}],drafts:[],samples:[],evaluation:{status:0,tests:[]}});
                 document.dispatchEvent(new PointerEvent('pointerdown'));
@@ -114,4 +135,115 @@ fn rounded_region(app: &AppWindow) -> bool {
             }
         })
         .unwrap_or(false)
+}
+
+/// Capture only this synthetic window's actual native title bar, including NC paint.
+#[cfg(windows)]
+fn capture_title_bar(app: &AppWindow, name: &str) {
+    use slint::winit_030::{
+        WinitWindowAccessor,
+        winit::raw_window_handle::{HasWindowHandle, RawWindowHandle},
+    };
+    use windows_sys::Win32::{Graphics::Gdi::*, UI::WindowsAndMessaging::*};
+    app.window().with_winit_window(|window| {
+        let RawWindowHandle::Win32(handle) = window.window_handle().unwrap().as_raw() else {
+            return;
+        };
+        let hwnd = handle.hwnd.get() as *mut _;
+        let width = window.inner_size().width;
+        let height = (46.0 * window.scale_factor()).ceil() as u32;
+        println!(
+            "Native chrome: decorated={}; scale={}",
+            window.is_decorated(),
+            window.scale_factor()
+        );
+        unsafe {
+            assert!(!window.is_decorated());
+            assert_eq!(
+                GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION,
+                0,
+                "native caption style was restored"
+            );
+            SendMessageW(hwnd, WM_NCPAINT, 1, 0);
+            SendMessageW(hwnd, WM_NCACTIVATE, 0, 0);
+            SendMessageW(hwnd, WM_NCACTIVATE, 1, 0);
+            let dc = GetWindowDC(hwnd);
+            let memory = CreateCompatibleDC(dc);
+            let bitmap = CreateCompatibleBitmap(dc, width as i32, height as i32);
+            let previous = SelectObject(memory, bitmap);
+            assert_ne!(
+                BitBlt(memory, 0, 0, width as i32, height as i32, dc, 0, 0, SRCCOPY),
+                0
+            );
+            SelectObject(memory, previous);
+            let mut info: BITMAPINFO = std::mem::zeroed();
+            info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+            info.bmiHeader.biWidth = width as i32;
+            info.bmiHeader.biHeight = -(height as i32);
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            let mut pixels = vec![0u8; (width * height * 4) as usize];
+            assert_ne!(
+                GetDIBits(
+                    memory,
+                    bitmap,
+                    0,
+                    height,
+                    pixels.as_mut_ptr().cast(),
+                    &mut info,
+                    DIB_RGB_COLORS
+                ),
+                0
+            );
+            DeleteObject(bitmap);
+            DeleteDC(memory);
+            ReleaseDC(hwnd, dc);
+            for pixel in pixels.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+                pixel[3] = 255;
+            }
+            std::fs::create_dir_all("target/ui-previews").unwrap();
+            image::save_buffer(
+                format!("target/ui-previews/{name}.png"),
+                &pixels,
+                width,
+                height,
+                image::ColorType::Rgba8,
+            )
+            .unwrap();
+            // A classic Windows caption previously painted blue over this
+            // otherwise empty part of the custom bar. Inspect actual HWND pixels,
+            // because Slint-only snapshots cannot detect non-client overpainting.
+            let expected = if app.get_dark_mode() {
+                [21, 21, 21]
+            } else {
+                [247, 247, 247]
+            };
+            let y = (18.0 * window.scale_factor()) as usize;
+            let start = (200.0 * window.scale_factor()) as usize;
+            let end = width as usize - (300.0 * window.scale_factor()) as usize;
+            for x in start..end {
+                let offset = (y * width as usize + x) * 4;
+                assert_eq!(
+                    &pixels[offset..offset + 3],
+                    &expected,
+                    "native caption covers custom title bar: {name}"
+                );
+            }
+            let icon_x = width as usize - (72.0 * window.scale_factor()) as usize;
+            let icon_y = (17.0 * window.scale_factor()) as usize;
+            let icon_size = (12.0 * window.scale_factor()) as usize;
+            assert!(
+                (icon_y..icon_y + icon_size).any(|y| (icon_x..icon_x + icon_size).any(|x| {
+                    let offset = (y * width as usize + x) * 4;
+                    if app.get_dark_mode() {
+                        pixels[offset] > 180 && pixels[offset + 1] > 180 && pixels[offset + 2] > 180
+                    } else {
+                        pixels[offset] < 100 && pixels[offset + 1] < 100 && pixels[offset + 2] < 100
+                    }
+                })),
+                "maximize/restore icon was not painted: {name}"
+            );
+        }
+    });
 }

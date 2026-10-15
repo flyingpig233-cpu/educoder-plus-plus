@@ -8,6 +8,8 @@ use std::time::Duration;
 
 pub struct WindowChrome {
     _timer: Timer,
+    #[cfg(windows)]
+    _frame: std::rc::Rc<std::cell::RefCell<Option<native_frame::FrameGuard>>>,
 }
 
 /// Select before creating any Slint window. Winit's transparent Windows mode
@@ -17,7 +19,7 @@ pub fn initialize_backend() -> Result<(), slint::PlatformError> {
         .backend_name("winit".into())
         .with_winit_window_attributes_hook(|attributes| {
             #[cfg(windows)]
-            let attributes = attributes.with_transparent(false);
+            let attributes = attributes.with_transparent(false).with_decorations(false);
             attributes
         })
         .select()
@@ -64,9 +66,18 @@ impl WindowChrome {
         let weak = app.as_weak();
         let timer = Timer::default();
         let mut previous = None;
+        #[cfg(windows)]
+        let frame = std::rc::Rc::new(std::cell::RefCell::new(None));
+        #[cfg(windows)]
+        let native_frame = frame.clone();
         timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
             let Some(app) = weak.upgrade() else { return };
             app.window().with_winit_window(|window| {
+                #[cfg(windows)]
+                if native_frame.borrow().is_none() {
+                    *native_frame.borrow_mut() = native_frame::FrameGuard::install(window);
+                    app.window().request_redraw();
+                }
                 let size = window.inner_size();
                 let state = (
                     size.width,
@@ -77,12 +88,109 @@ impl WindowChrome {
                 if previous != Some(state) {
                     app.set_window_maximized(state.3);
                     #[cfg(windows)]
-                    round_window(window);
+                    if native_frame.borrow().is_some() {
+                        round_window(window);
+                    }
                     previous = Some(state);
                 }
             });
         });
-        Self { _timer: timer }
+        Self {
+            _timer: timer,
+            #[cfg(windows)]
+            _frame: frame,
+        }
+    }
+}
+
+#[cfg(windows)]
+mod native_frame {
+    use slint::winit_030::winit::{
+        raw_window_handle::{HasWindowHandle, RawWindowHandle},
+        window::Window,
+    };
+    use windows_sys::Win32::{
+        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        UI::{
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+            WindowsAndMessaging::{
+                GWL_STYLE, GetWindowLongW, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+                SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW, SetWindowPos, WM_NCACTIVATE,
+                WM_NCCALCSIZE, WM_NCDESTROY, WM_NCPAINT, WM_STYLECHANGING, WS_CAPTION,
+            },
+        },
+    };
+
+    const SUBCLASS_ID: usize = 0x45445543;
+    pub(super) struct FrameGuard(HWND);
+
+    impl FrameGuard {
+        pub fn install(window: &Window) -> Option<Self> {
+            let RawWindowHandle::Win32(handle) = window.window_handle().ok()?.as_raw() else {
+                return None;
+            };
+            let hwnd = handle.hwnd.get() as HWND;
+            // Installed and removed on the Slint/Winit UI thread; no borrowed data
+            // crosses the callback boundary. Winit retains all client-area handling.
+            if unsafe { SetWindowSubclass(hwnd, Some(frame_proc), SUBCLASS_ID, 0) } == 0 {
+                return None;
+            }
+            unsafe {
+                let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+                SetWindowLongW(hwnd, GWL_STYLE, (style & !WS_CAPTION) as i32);
+                SetWindowPos(
+                    hwnd,
+                    std::ptr::null_mut(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+                );
+            }
+            Some(Self(hwnd))
+        }
+    }
+
+    impl Drop for FrameGuard {
+        fn drop(&mut self) {
+            unsafe {
+                RemoveWindowSubclass(self.0, Some(frame_proc), SUBCLASS_ID);
+            }
+        }
+    }
+
+    unsafe extern "system" fn frame_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        id: usize,
+        _: usize,
+    ) -> LRESULT {
+        match message {
+            // Winit reapplies its native styles when maximizing/restoring. Keep
+            // WS_THICKFRAME and the system commands, but never restore a caption.
+            WM_STYLECHANGING if wparam as i32 == GWL_STYLE => unsafe {
+                if let Some(style) = (lparam as *mut STYLESTRUCT).as_mut() {
+                    style.styleNew &= !WS_CAPTION;
+                }
+                DefSubclassProc(hwnd, message, wparam, lparam)
+            },
+            // Winit normally keeps WS_CAPTION and extends the client area through
+            // WM_NCCALCSIZE. Suppress classic frame painting as well, since window
+            // regions and activation changes can trigger that fallback path.
+            WM_NCPAINT => 0,
+            WM_NCCALCSIZE if wparam == 0 => 0,
+            // Forward activation so Winit still updates focus. -1 tells
+            // DefWindowProc to update activation without painting a native frame.
+            WM_NCACTIVATE => unsafe { DefSubclassProc(hwnd, message, wparam, -1) },
+            WM_NCDESTROY => unsafe {
+                RemoveWindowSubclass(hwnd, Some(frame_proc), id);
+                DefSubclassProc(hwnd, message, wparam, lparam)
+            },
+            _ => unsafe { DefSubclassProc(hwnd, message, wparam, lparam) },
+        }
     }
 }
 

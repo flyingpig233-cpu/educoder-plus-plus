@@ -88,6 +88,8 @@ npm test --prefix crates/ui/web
 
 浏览器测试默认使用本机 Edge。真实账号 smoke 工具始终只读。
 
+`native_workspace` 还会触发 Windows 非客户区重绘，检查真实窗口的标题栏像素和原生样式，覆盖最大化、还原及深浅主题，防止系统标题栏重新盖住自定义界面；截图保存在 `target/ui-previews/titlebar-native-*.png`。
+
 ## 使用爬虫
 
 先在浏览器登录自己的头歌账号，导出该站点的 Netscape 格式 `cookies.txt`。将文件保存到源码目录外的私人目录；勿将 Cookie 粘贴到命令行或提交 Git。
