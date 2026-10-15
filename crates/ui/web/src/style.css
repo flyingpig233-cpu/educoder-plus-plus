@@ -13,3 +13,21 @@ main { display:flex; flex:1; min-height:0; } .problem-pane { width:var(--problem
 dialog { width:min(900px,92vw); max-height:90vh; overflow:auto; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:20px; box-shadow:0 16px 60px #0006; }
 dialog::backdrop { background:#0007; } .answer-heading { display:flex; align-items:center; justify-content:space-between; font-size:16px; } #answer-code { height:40vh; min-height:180px; white-space:pre; resize:vertical; } #answer-status { color:var(--accent); } #answer-target { max-width:420px; }
 .platform-output { overflow:auto; overflow-wrap:anywhere; user-select:text; } .platform-output pre { white-space:pre-wrap; } .platform-output table { border-collapse:collapse; } .platform-output td,.platform-output th { border:1px solid var(--line); padding:4px 8px; } .platform-output ins { color:var(--good); } .platform-output del { color:var(--bad); } #sync-status { font-size:11px; white-space:nowrap; }
+body,.workbar,.editor-toolbar,.results-pane,button,select,textarea { transition:background-color 180ms ease,color 180ms ease,border-color 150ms ease; }
+button { transition:background-color 150ms ease,border-color 150ms ease,transform 100ms ease,opacity 150ms ease; } button:active:enabled { transform:translateY(1px); }
+dialog[open] { animation:dialog-enter 180ms cubic-bezier(.2,.7,.2,1); } .test-case { animation:content-enter 180ms ease-out; }
+@keyframes dialog-enter { from { opacity:0; transform:translateY(8px) scale(.985); } to {opacity:1;transform:none;} }
+@keyframes content-enter { from {opacity:.5;transform:translateY(4px);} to {opacity:1;transform:none;} }
+#ac-celebration { position:fixed;inset:0;z-index:10000;pointer-events:none;overflow:hidden; }
+#confetti-canvas { position:absolute;inset:0;width:100%;height:100%;pointer-events:none; }
+.ac-toast { position:absolute;left:var(--ac-left,50%);top:var(--ac-top,50%);display:flex;flex-direction:column;align-items:center;gap:4px;transform:translate(-50%,-50%);animation:ac-enter 420ms cubic-bezier(.16,1,.3,1) both,ac-exit 500ms 4200ms ease-in forwards;white-space:nowrap;filter:drop-shadow(0 8px 24px #0005); }
+.ac-toast strong {font:italic 900 88px/1 'Segoe UI',sans-serif;color:var(--good);letter-spacing:-5px;-webkit-text-stroke:1px var(--panel);}
+.ac-toast span {font-size:14px;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:6px 14px;}
+@keyframes ac-enter {from{opacity:0;transform:translate(-50%,-40%) scale(.7);}to{opacity:1;transform:translate(-50%,-50%) scale(1);}}
+@keyframes ac-exit {to{opacity:0;transform:translate(-50%,-55%) scale(1.05);}}
+@media(prefers-reduced-motion:reduce) { *,*::before,*::after {transition:none!important;animation:none!important;scroll-behavior:auto!important;} }
+:root[data-reduced-motion=true] * {transition:none!important;animation:none!important;}
+/* Monaco mounts its context menu outside the editor's scoped theme container. */
+:root { --vscode-menu-foreground:var(--text);--vscode-menu-background:var(--surface);--vscode-menu-selectionForeground:var(--text);--vscode-menu-selectionBackground:var(--line);--vscode-menu-selectionBorder:transparent;--vscode-menu-separatorBackground:var(--line);--vscode-menu-border:var(--line);--vscode-shadow-lg:0 8px 24px #0005;--vscode-strokeThickness:1px;--vscode-cornerRadius-large:8px;--vscode-cornerRadius-small:4px; }
+.monaco-menu-container {z-index:2000;}
+:root { --vscode-list-hoverBackground:var(--line);--vscode-list-hoverForeground:var(--text);--vscode-widget-shadow:#0005; }

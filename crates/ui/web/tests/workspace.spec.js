@@ -5,7 +5,10 @@ const frame={type:'task',task:{game_identifier:'demo-game',title:'求和',descri
 test.beforeEach(async({page})=>{
   await page.addInitScript(()=>{
     window.messages=[];window.drafts=[];
-    window.ipc={postMessage(body){const message=JSON.parse(body);window.messages.push(message);if(!message.id)return;
+    window.ipc={postMessage(body){const message=JSON.parse(body);window.messages.push(message);
+      if(message.action==='celebrate-ac'){window.celebrationCount=(window.celebrationCount??0)+1;window.educoder.receive({type:'celebration',id:window.celebrationCount,game:message.context,width:innerWidth,height:innerHeight,left:0,top:0,particles:Array.from({length:90},(_,i)=>({x:i/90,drift:(i%3)-1,delay:(i%5)*.02,speed:1.8,spin:720,size:7,color:['#70d6a1','#82b6ff','#f7cd6c'][i%3]}))});}
+      if(message.action==='stop-celebration')window.educoder.receive({type:'stop-celebration'});
+      if(!message.id)return;
       setTimeout(()=>{
         if(message.action==='draft'&&window.rejectDraft){window.educoder.receive({reply_to:message.id,ok:false,error:'草稿保存失败'});return;}
         if(message.action==='draft')window.drafts.push(message.payload);
@@ -26,6 +29,50 @@ test.beforeEach(async({page})=>{
     window.educoder.receive({type:'homework',title:'示例课堂 · 程序设计',games:[{identifier:'demo-game',position:1,name:'求和'}],game:'demo-game',can_enter:false});
     window.educoder.receive({type:'connection',connected:true});window.educoder.receive(frame);
   },frame);
+});
+
+test('nonstandard Markdown headings render without rewriting code fences',async({page})=>{
+  await page.evaluate(frame=>{frame.task.description_markdown='#标题\n\n##要求\n\n> ###引用标题\n\n```c\n#include <stdio.h>\n#define ANSWER 42\n##not a heading\n```\n\n    #indented code\n\n<pre>\n#raw code\n</pre>\n\n普通的 #文字';window.educoder.receive(frame);},structuredClone(frame));
+  await expect(page.locator('#description h1')).toHaveText('标题');await expect(page.locator('#description h2')).toHaveText('要求');await expect(page.locator('#description h3')).toHaveText('引用标题');
+  await expect(page.locator('#description pre').first()).toContainText('#include <stdio.h>\n#define ANSWER 42\n##not a heading');
+  await expect(page.locator('#description pre').nth(1)).toContainText('#indented code');
+  await expect(page.locator('#description pre').nth(2)).toContainText('#raw code');
+  await page.evaluate(frame=>{frame.task.description_markdown='```html\n<pre>\n```\n\n##后续标题';window.educoder.receive(frame);},structuredClone(frame));
+  await expect(page.locator('#description h2')).toHaveText('后续标题');
+});
+
+test('Monaco right-click opens its editing context menu',async({page,context})=>{
+  await context.grantPermissions(['clipboard-read','clipboard-write']);
+  await page.locator('#editor .view-lines').click({button:'right',position:{x:120,y:15}});
+  await expect(page.locator('.monaco-menu')).toBeVisible();
+  await expect(page.locator('.monaco-menu')).toContainText('Copy');
+  await expect(page.locator('.monaco-menu')).toContainText('Paste');
+  // Monaco paints the scrollable surface inside its Shadow DOM, not the wrapper.
+  await expect(page.locator('.monaco-scrollable-element:has(.monaco-menu)')).toHaveCSS('background-color','rgb(41, 41, 41)');
+  await page.screenshot({path:'../../../target/ui-previews/editor-context-menu.png'});
+  await page.keyboard.press('Escape');await expect(page.locator('.monaco-menu')).not.toBeVisible();
+});
+
+test('AC celebration only plays for a new confirmed pass and does not block editing',async({page})=>{
+  await page.evaluate(frame=>{frame.evaluation.status=2;window.educoder.receive(frame);},structuredClone(frame));
+  await expect(page.locator('#ac-celebration')).toBeHidden();
+  await page.click('#submit');await expect(page.locator('#ac-celebration')).toBeVisible();
+  await expect(page.locator('.ac-toast strong')).toHaveText('AC');
+  await page.waitForTimeout(600);await page.screenshot({path:'../../../target/ui-previews/accepted-confetti.png'});
+  await page.evaluate(()=>window.educoder.editor.setValue('edits during celebration'));
+  expect(await page.evaluate(()=>window.educoder.editor.getValue())).toBe('edits during celebration');
+  await page.click('#refresh-result');expect(await page.evaluate(()=>window.celebrationCount)).toBe(1);
+  await page.evaluate(()=>window.educoder.receive({type:'clear'}));await expect(page.locator('#ac-celebration')).toBeHidden();
+});
+
+test('reduced-motion AC feedback stays static and failed evaluations do not celebrate',async({page})=>{
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await page.evaluate(()=>window.submitReply={can_submit:true,evaluation:{status:3,compile_output:'failed',tests:[]}});
+  await page.click('#submit');await expect(page.locator('#remote-status')).toHaveText('未通过');
+  await expect(page.locator('#ac-celebration')).toBeHidden();
+  await page.evaluate(()=>window.educoder.receive({type:'celebration',id:123,width:innerWidth,height:innerHeight,reduce_motion:true,particles:[]}));
+  await expect(page.locator('#ac-celebration')).toBeVisible();
+  expect(await page.locator('.ac-toast').evaluate(e=>getComputedStyle(e).animationName)).toBe('none');
 });
 
 test('automatic sync debounces edits and preserves changes typed during a request',async({page})=>{

@@ -1,7 +1,7 @@
 //! Monaco and Markdown run in an offline child WebView inside the Slint window.
 use crate::{AppWindow, Controller};
 use include_dir::{Dir, include_dir};
-use slint::{ComponentHandle, Timer, TimerMode, winit_030::WinitWindowAccessor};
+use slint::{ComponentHandle, Model, Timer, TimerMode, winit_030::WinitWindowAccessor};
 use std::{
     borrow::Cow,
     cell::{Cell, RefCell},
@@ -36,6 +36,8 @@ impl WebHost {
         let mut last_connection = None;
         let mut last_visible = false;
         let mut last_page = None;
+        let mut last_celebration = 0;
+        let mut celebration_visible = false;
         timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
             let Some(app) = ui.upgrade() else { return };
             if last_page != Some(app.get_page()) {
@@ -126,7 +128,7 @@ impl WebHost {
             if !ready.get() {
                 return;
             }
-            let theme = (app.get_dark_mode(), app.get_accent_index());
+            let theme = (app.get_dark_mode(), app.get_accent_index(), app.get_reduce_motion());
             if last_theme != Some(theme) {
                 let accent = match (theme.0, theme.1) {
                     (true, 1) => "#8ab4f8",
@@ -136,7 +138,7 @@ impl WebHost {
                     (true, _) => "#eeeeee",
                     (false, _) => "#202020",
                 };
-                let data = serde_json::json!({"type":"theme","dark":theme.0,"accent":accent});
+                let data = serde_json::json!({"type":"theme","dark":theme.0,"accent":accent,"reduce_motion":theme.2});
                 let _ = webview.evaluate_script(&format!("window.educoder.receive({data})"));
                 last_theme = Some(theme);
             }
@@ -153,6 +155,14 @@ impl WebHost {
                     "for(const message of {data}) window.educoder.receive(message);"
                 ));
             }
+            if last_celebration!=app.get_celebration_id()&&app.get_celebration_active() {
+                last_celebration=app.get_celebration_id();celebration_visible=true;
+                let particles=app.get_confetti().iter().map(|p|serde_json::json!({"x":p.x,"drift":p.drift,"delay":p.delay,"speed":p.speed,"spin":p.spin,"size":p.size,"color":format!("#{:02x}{:02x}{:02x}",p.color.red(),p.color.green(),p.color.blue())})).collect::<Vec<_>>();
+                let scale=app.window().scale_factor();let size=app.window().size();
+                let data=serde_json::json!({"type":"celebration","id":last_celebration,"game":app.get_celebration_game().as_str(),"width":size.width as f32/scale,"height":size.height as f32/scale,"left":259,"top":46,"reduce_motion":app.get_reduce_motion(),"particles":particles});
+                let _=webview.evaluate_script(&format!("window.educoder.receive({data})"));
+            }
+            if celebration_visible&&!app.get_celebration_active(){celebration_visible=false;let _=webview.evaluate_script("window.educoder.receive({type:'stop-celebration'})");}
         });
         Self {
             _timer: timer,

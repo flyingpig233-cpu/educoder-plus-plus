@@ -3,8 +3,10 @@ import { ScrollView, Palette } from "std-widgets.slint";
 export struct CourseRow { id: string, title: string }
 export struct HomeworkRow { id: string, title: string, subtitle: string, badge: string }
 export struct EnvironmentRow { language: string, available: bool, detail: string }
+export struct ConfettiParticle { x: float, drift: float, delay: float, speed: float, spin: float, size: float, color: color }
 
 export global Theme {
+    in-out property <bool> reduce-motion: false;
     in-out property <bool> dark: true;
     in-out property <int> accent-index: 0;
     out property <color> accent: accent-index == 1 ? (dark ? #8ab4f8 : #3569b5) : (accent-index == 2 ? (dark ? #c9a7ff : #7950b8) : text);
@@ -36,6 +38,7 @@ component ActionButton inherits Rectangle {
     border-color: focus.has-focus ? Theme.muted : (root.primary || root.selected ? Theme.accent : Theme.line);
     background: root.primary ? Theme.accent : (touch.has-hover || root.selected || (root.quiet && focus.has-focus) ? Theme.hover : transparent);
     opacity: root.enabled ? 1 : 0.4;
+    animate background, border-color, opacity { duration: Theme.reduce-motion ? 0ms : 120ms; easing: ease-in-out; }
     accessible-role: button;
     accessible-label: root.text;
     accessible-action-default => { if root.enabled { root.clicked(); } }
@@ -67,6 +70,7 @@ component WindowButton inherits Rectangle {
     callback clicked;
     width: 44px; height: 46px;
     background: touch.has-hover || focus.has-focus ? (root.close-button ? #c42b1c : Theme.hover) : transparent;
+    animate background { duration: Theme.reduce-motion ? 0ms : 100ms; }
     accessible-role: button; accessible-label: root.label;
     accessible-action-default => { root.clicked(); }
     Image {
@@ -90,6 +94,7 @@ component InputField inherits Rectangle {
     border-width: 1px;
     border-color: input.has-focus ? Theme.muted : Theme.line;
     background: Theme.surface;
+    animate border-color, background { duration: Theme.reduce-motion ? 0ms : 150ms; }
     Text {
         x: 12px; width: parent.width - 24px;
         visible: input.text == "";
@@ -123,6 +128,14 @@ export component AppWindow inherits Window {
     public function show-account-menu() { account-menu.show(); }
     public function hide-account-menu() { if account-menu.is-open { account-menu.close(); } }
     in-out property <bool> dark-mode <=> Theme.dark;
+    in-out property <int> theme-mode: 0; // 0: system, 1: light, 2: dark
+    in-out property <bool> reduce-motion <=> Theme.reduce-motion;
+    in-out property <float> page-reveal: 1;
+    in-out property <bool> celebration-active: false;
+    in-out property <int> celebration-id: 0;
+    in-out property <string> celebration-game;
+    in-out property <float> celebration-progress: 0;
+    in-out property <[ConfettiParticle]> confetti;
     in-out property <bool> connected: false;
     in-out property <bool> has-session: false;
     in-out property <int> page: 0;
@@ -236,6 +249,7 @@ export component AppWindow inherits Window {
                             border-width: course-focus.has-focus ? 1px : 0px;
                             border-color: Theme.muted;
                             background: root.selected-course-id == course.id ? Theme.hover : (course-touch.has-hover ? Theme.surface : transparent);
+                            animate background { duration: Theme.reduce-motion ? 0ms : 130ms; }
                             accessible-role: button; accessible-label: course.title;
                             accessible-action-default => { if root.has-session && !root.login-open { root.select-course(course.id); } }
                             course-focus := FocusScope {
@@ -280,6 +294,7 @@ export component AppWindow inherits Window {
         }
         Rectangle { width: 1px; background: Theme.line; }
         if root.page == 0: Rectangle {
+          opacity: root.page-reveal;
             horizontal-stretch: 1; background: Theme.canvas;
             VerticalLayout {
                 padding: 32px; spacing: 22px;
@@ -368,6 +383,7 @@ export component AppWindow inherits Window {
             }
         }
         if root.page == 1: Rectangle {
+          opacity: root.page-reveal;
           horizontal-stretch: 1; background: Theme.canvas;
           ScrollView {
             content-width: self.width;
@@ -380,8 +396,9 @@ export component AppWindow inherits Window {
               Text { text: "外观"; font-size: 16px; color: Theme.text; }
               HorizontalLayout {
                 spacing: 10px;
-                ActionButton { text: "深色"; selected: root.dark-mode; clicked => { root.dark-mode = true; } }
-                ActionButton { text: "浅色"; selected: !root.dark-mode; clicked => { root.dark-mode = false; } }
+                ActionButton { text: "跟随系统"; selected: root.theme-mode == 0; clicked => { root.theme-mode = 0; } }
+                ActionButton { text: "深色"; selected: root.theme-mode == 2; clicked => { root.theme-mode = 2; root.dark-mode = true; } }
+                ActionButton { text: "浅色"; selected: root.theme-mode == 1; clicked => { root.theme-mode = 1; root.dark-mode = false; } }
                 Rectangle { horizontal-stretch: 1; }
               }
               Text { text: "强调色"; font-size: 13px; color: Theme.muted; }
@@ -452,6 +469,32 @@ export component AppWindow inherits Window {
     }
     }
 
+    if root.celebration-active && !root.reduce-motion: Rectangle {
+        width: parent.width; height: parent.height; clip: true;
+        for particle in root.confetti: Rectangle {
+            visible: root.celebration-progress >= particle.delay && (root.page != 2 || self.x < 259px || self.y < 46px || self.x > root.width - 6px || self.y > root.height - 6px);
+            x: particle.x * root.width + particle.drift * root.celebration-progress * 60px;
+            y: (root.celebration-progress - particle.delay) * particle.speed * (root.height + 60px) - 40px;
+            width: particle.size * 1px; height: particle.size * 0.55px;
+            background: particle.color;
+            transform-rotation: particle.spin * root.celebration-progress * 1deg;
+        }
+    }
+    if root.celebration-active && root.page != 2: Rectangle {
+        x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+        width: 220px; height: 150px;
+        opacity: min(1, root.celebration-progress * 12) * min(1, (1 - root.celebration-progress) * 7);
+        VerticalLayout { alignment: center; spacing: 4px;
+            Text { text: "AC"; font-size: 72px; font-weight: 900; color: Theme.good; horizontal-alignment: center; }
+            Text { text: "Accepted · 全部测试通过"; font-size: 14px; color: Theme.text; horizontal-alignment: center; }
+        }
+    }
+    Rectangle {
+        width: parent.width; height: parent.height;
+        background: transparent; border-width: 1px;
+        border-color: root.dark-mode ? #656565 : #b4b4b4;
+        border-radius: root.window-maximized ? 0px : 12px;
+    }
     account-menu := PopupWindow {
         x: 16px; y: root.height - 312px; width: 226px; height: 232px;
         close-policy: close-on-click-outside;

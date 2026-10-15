@@ -1,10 +1,55 @@
 //! Frameless controls and a real rounded native window, including Windows 10.
-use crate::AppWindow;
+use crate::{AppWindow, ConfettiParticle};
 use slint::{
     ComponentHandle, Timer, TimerMode,
     winit_030::{WinitWindowAccessor, winit::window::ResizeDirection},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+fn confetti() -> Vec<ConfettiParticle> {
+    let palette = [0x70d6a1, 0x82b6ff, 0xf7cd6c, 0xd6a0ee, 0xf197ae, 0x81d7d4];
+    let mut seed = 0x45445543u32;
+    let mut random = || {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        (seed >> 8) as f32 / 16777216.0
+    };
+    (0..90)
+        .map(|i| ConfettiParticle {
+            x: random(),
+            drift: random() * 2.0 - 1.0,
+            delay: random() * 0.23,
+            speed: 1.5 + random() * 1.1,
+            spin: random() * 1440.0 - 720.0,
+            size: 5.0 + random() * 4.0,
+            color: slint::Color::from_rgb_u8(
+                (palette[i % palette.len()] >> 16) as u8,
+                (palette[i % palette.len()] >> 8) as u8,
+                palette[i % palette.len()] as u8,
+            ),
+        })
+        .collect()
+}
+
+fn reduce_motion() -> bool {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+        };
+        let mut enabled = 1i32;
+        return SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            (&mut enabled as *mut i32).cast(),
+            0,
+        ) != 0
+            && enabled == 0;
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
 
 pub struct WindowChrome {
     _timer: Timer,
@@ -27,6 +72,8 @@ pub fn initialize_backend() -> Result<(), slint::PlatformError> {
 
 impl WindowChrome {
     pub fn attach(app: &AppWindow) -> Self {
+        app.set_confetti(slint::ModelRc::new(slint::VecModel::from(confetti())));
+        app.set_reduce_motion(reduce_motion());
         let weak = app.as_weak();
         app.on_drag_window(move || {
             if let Some(app) = weak.upgrade() {
@@ -66,13 +113,57 @@ impl WindowChrome {
         let weak = app.as_weak();
         let timer = Timer::default();
         let mut previous = None;
+        let mut previous_page = app.get_page();
+        let mut page_started = None::<Instant>;
+        let mut celebration_id = app.get_celebration_id();
+        let mut celebration_started = None::<Instant>;
         #[cfg(windows)]
         let frame = std::rc::Rc::new(std::cell::RefCell::new(None));
         #[cfg(windows)]
         let native_frame = frame.clone();
         timer.start(TimerMode::Repeated, Duration::from_millis(16), move || {
             let Some(app) = weak.upgrade() else { return };
+            if app.get_page() != previous_page {
+                previous_page = app.get_page();
+                page_started = Some(Instant::now());
+            }
+            if let Some(start) = page_started {
+                let phase = (start.elapsed().as_secs_f32() / 0.18).min(1.0);
+                app.set_page_reveal(if app.get_reduce_motion() {
+                    1.0
+                } else {
+                    1.0 - (1.0 - phase).powi(3)
+                });
+                if phase >= 1.0 {
+                    page_started = None;
+                }
+            }
+            if celebration_id != app.get_celebration_id() {
+                celebration_id = app.get_celebration_id();
+                celebration_started = Some(Instant::now());
+            }
+            if let Some(start) = celebration_started {
+                let phase = (start.elapsed().as_secs_f32()
+                    / if app.get_reduce_motion() { 1.5 } else { 5.0 })
+                .min(1.0);
+                app.set_celebration_progress(phase);
+                if phase >= 1.0 || !app.get_celebration_active() {
+                    app.set_celebration_active(false);
+                    celebration_started = None;
+                }
+            }
             app.window().with_winit_window(|window| {
+                let dark = match app.get_theme_mode() {
+                    1 => false,
+                    2 => true,
+                    _ => window.theme().map_or(app.get_dark_mode(), |theme| {
+                        theme == slint::winit_030::winit::window::Theme::Dark
+                    }),
+                };
+                if app.get_dark_mode() != dark {
+                    app.set_dark_mode(dark);
+                    crate::rendering::repaint_all(&app);
+                }
                 #[cfg(windows)]
                 if native_frame.borrow().is_none() {
                     *native_frame.borrow_mut() = native_frame::FrameGuard::install(window);

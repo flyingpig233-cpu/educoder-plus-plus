@@ -56,6 +56,7 @@
     <p class="muted">完整程序只可导入同类型代码文件；头文件或填空题请选取答案片段后插入。导入覆盖目标文件，可用 Ctrl+Z 撤销；代码会后台同步，不会自动提交评测。</p>
     <div class="sample-toolbar"><label>导入目标<select id="answer-target" aria-label="答案导入目标"></select></label><button id="import-answer">覆盖目标文件</button><button id="insert-answer">插入所选片段</button></div>
   </dialog>
+  <div id="ac-celebration" hidden aria-live="polite" role="status"><canvas id="confetti-canvas" aria-hidden="true"></canvas><div class="ac-toast"><strong>AC</strong><span>Accepted · 全部测试通过</span></div></div>
   <script type="module" src="app.js"></script>
 </body>
 </html>

@@ -11,6 +11,10 @@ import 'monaco-editor/editor/contrib/folding/browser/folding.js';
 import 'monaco-editor/editor/contrib/bracketMatching/browser/bracketMatching.js';
 import 'monaco-editor/editor/contrib/hover/browser/hoverContribution.js';
 import 'monaco-editor/editor/contrib/comment/browser/comment.js';
+import 'monaco-editor/features/contextmenu/register.js';
+import 'monaco-editor/features/clipboard/register.js';
+import { normalizeTaskMarkdown } from './markdown.js';
+import { startCelebration, stopCelebration } from './celebration.js';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import './style.css';
@@ -23,6 +27,12 @@ const state = { game: '', task: null, base: new Map(), files: [], busy: false, c
 let draftTimer, draftQueue = Promise.resolve(), draftError = false, activeTab = 'local';
 let answerData = null, answerGame = '', answerSequence = 0, answerLoading = false, answerImporting = false;
 let syncTimer, syncPromise = null, syncFailed = false, resultTimer, resultAttempts = 0;
+let celebrationArmed=false;
+function animateContent(node) {
+  if(matchMedia('(prefers-reduced-motion: reduce)').matches||document.documentElement.dataset.reducedMotion==='true')return;
+  node.getAnimations().forEach(animation=>animation.cancel());
+  node.animate([{opacity:.6,transform:'translateY(4px)'},{opacity:1,transform:'translateY(0)'}],{duration:180,easing:'cubic-bezier(.2,.7,.2,1)'});
+}
 const editor = monaco.editor.create($('editor'), { theme:'vs-dark', automaticLayout:true, fontFamily:'Consolas, monospace', fontSize:14, lineHeight:22, minimap:{enabled:false}, scrollBeyondLastLine:false, smoothScrolling:true, padding:{top:14}, readOnly:true, ariaLabel:'代码编辑器', tabSize:4, insertSpaces:true, fixedOverflowWidgets:true });
 const language = path => ({rs:'rust',py:'python',c:'cpp',cpp:'cpp',cc:'cpp',cxx:'cpp',h:'cpp',java:'java',js:'javascript',mjs:'javascript',sql:'sql',sh:'shell'})[path.split('.').pop()?.toLowerCase()] || 'plaintext';
 
@@ -192,17 +202,18 @@ function flushDraft() {
 async function operation(action, payload={}) {
   if(syncPromise)await syncPromise;
   if(state.busy)return;
+  if(action==='submit')celebrationArmed=true;
   error(); state.busy=true; updateButtons(); $('operation-status').textContent=({save:'正在保存',submit:'正在评测',run:'正在编译运行',result:'正在获取结果',refresh:'正在更新题目',enter:'正在进入实训'})[action]??'正在处理';
   try {
     await flushDraft();
     const sent=allFiles();
     const result=await request(action,{...payload,files:sent,entry:$('files').value,samples:structuredClone(state.samples)});
     if(action==='submit') { for(const file of sent) state.base.set(file.path,file.content); await flushDraft(); notice(result?.evaluation?.status===1?'评测仍在进行，正在后台查询结果。':'本次评测已结束');setTab('remote'); }
-    if(result?.evaluation) showEvaluation(result.evaluation);
+    if(result?.evaluation) showEvaluation(result.evaluation,action==='submit'||action==='result');
     if(result?.result_error)error(result.result_error);
     if(result?.can_submit != null && state.task) state.task.can_submit=result.can_submit;
     if(action==='run') showLocal(result);
-  } catch(e) { if(state.task && (action==='submit'||e.message.includes('结果未知') || e.message.includes('仍在进行')))state.task.can_submit=false; error(e.message);if(action==='submit')setTab('remote'); }
+  } catch(e) { if(action==='submit')celebrationArmed=false;if(state.task && (action==='submit'||e.message.includes('结果未知') || e.message.includes('仍在进行')))state.task.can_submit=false; error(e.message);if(action==='submit')setTab('remote'); }
   finally {state.busy=false;$('operation-status').textContent='';updateButtons();if(!syncFailed&&hasChanges())scheduleSync();}
 }
 
@@ -221,7 +232,8 @@ function resultOutput(value) {
   return block;
 }
 
-function showEvaluation(evaluation) {
+function showEvaluation(evaluation, confirmed=false) {
+  if(confirmed&&celebrationArmed&&evaluation.status!==1){celebrationArmed=false;if(evaluation.status===2)notify('celebrate-ac');}
   clearTimeout(resultTimer);if(evaluation.status!==1){if(resultAttempts)notice('本次评测已结束');resultAttempts=0;}
   const status=({0:'未开始',1:'评测中',2:'通过',3:'未通过'})[evaluation.status]??`状态 ${evaluation.status}`;
   $('remote-status').textContent=status; $('remote-status').className=evaluation.status===2?'passed':evaluation.status===3?'failed':'';
@@ -244,12 +256,14 @@ function showLocal(result) {
   for(const sample of result.samples??[]){const o=sample.output;append(`${sample.name} · ${o.timed_out?'运行超时':sample.passed===true?'通过':sample.passed===false?'未通过':'已运行'} · ${o.elapsed_ms} ms`, `stdout:\n${o.stdout}\n${o.stderr?'stderr:\n'+o.stderr:''}${o.truncated?'\n输出已达到大小上限。':''}`, sample.passed===true?'passed':sample.passed===false||o.timed_out?'failed':'');}
   setTab('local');
 }
-function setTab(tab){activeTab=tab; $('local-tab').hidden=tab!=='local';$('remote-tab').hidden=tab!=='remote';document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));}
+function setTab(tab){activeTab=tab; $('local-tab').hidden=tab!=='local';$('remote-tab').hidden=tab!=='remote';animateContent($(tab==='local'?'local-tab':'remote-tab'));document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));}
 
 function receive(message) {
   if(message.reply_to){const callback=pending.get(message.reply_to);if(!callback)return;clearTimeout(callback.timer);pending.delete(message.reply_to);message.ok?callback.resolve(message.data):callback.reject(new Error(message.error??'操作失败'));return;}
   switch(message.type){
-    case 'theme': document.documentElement.dataset.theme=message.dark?'dark':'light'; document.documentElement.style.setProperty('--accent',message.accent);monaco.editor.setTheme(message.dark?'vs-dark':'vs');break;
+    case 'theme': document.documentElement.dataset.theme=message.dark?'dark':'light';document.documentElement.dataset.reducedMotion=String(!!message.reduce_motion); document.documentElement.style.setProperty('--accent',message.accent);monaco.editor.setTheme(message.dark?'vs-dark':'vs');break;
+    case 'celebration': if(!message.game||message.game===state.game)startCelebration(message);break;
+    case 'stop-celebration': stopCelebration();break;
     case 'connection': state.connected=message.connected;$('connection').textContent=message.connected?'● 已连接头歌':'● 未连接';$('connection').className=`connection ${message.connected?'online':'offline'}`;updateButtons();if(state.connected)scheduleSync();break;
     case 'homework':
       $('homework-title').textContent=message.title;
@@ -259,7 +273,7 @@ function receive(message) {
       break;
     case 'task': {
       syncFailed=false;clearTimeout(syncTimer);
-      if(state.game!==message.task.game_identifier)resetAnswers();
+      if(state.game!==message.task.game_identifier){resetAnswers();celebrationArmed=false;stopCelebration();notify('stop-celebration');}
       const task=message.task; const previous=state.game; state.game=task.game_identifier;state.task=task;
       const drafts=new Map((message.drafts??[]).map(f=>[f.path,f.content]));
       state.conflict=message.conflict??false;
@@ -270,7 +284,8 @@ function receive(message) {
         if(model&&!preserve&&model.getValue()!==content)model.setValue(content);file.editor_content=content;
       }
       state.base=new Map(message.files.map(f=>[f.path,f.content]));
-      $('description').innerHTML=DOMPurify.sanitize(marked.parse(task.description_markdown??''),{FORBID_TAGS:['iframe','form','input','button','style'],FORBID_ATTR:['style']});
+      $('description').innerHTML=DOMPurify.sanitize(marked.parse(normalizeTaskMarkdown(task.description_markdown??'')),{FORBID_TAGS:['iframe','form','input','button','style'],FORBID_ATTR:['style']});
+      animateContent($('description'));
       options($('files'),state.files.map(f=>({value:f.path,text:f.path})),message.entry??state.files[0]?.path);
       for(const file of state.files){const key=`${state.game}:${file.path}`;if(!models.has(key))models.set(key,monaco.editor.createModel(file.editor_content,language(file.path),monaco.Uri.parse(`inmemory://educoder/${encodeURIComponent(state.game)}/${encodeURIComponent(file.path)}`)));}
       if(state.files.length)selectFile($('files').value);else{editor.setModel(null);editor.updateOptions({readOnly:true});}
@@ -282,7 +297,7 @@ function receive(message) {
     case 'before-close': flushDraft().then(()=>syncPromise).then(()=>notify('close-ready')).catch(e=>error(e.message));break;
     case 'before-logout': flushDraft().then(()=>syncPromise).then(()=>notify('logout-ready')).catch(e=>error(e.message));break;
     case 'navigate': if(state.busy){error('请等待当前操作完成后再切换。');break;} flushDraft().then(()=>syncPromise).then(()=>notify('navigate',message.target)).catch(e=>error(e.message));break;
-    case 'clear': clearTimeout(syncTimer);clearTimeout(resultTimer);syncFailed=false;resultAttempts=0;resetAnswers();clearTimeout(draftTimer);state.game='';state.task=null;state.files=[];state.base.clear();editor.setModel(null);models.forEach(m=>m.dispose());models.clear();$('description').textContent='请选择作业。';$('local-results').replaceChildren();$('test-cases').replaceChildren();updateButtons();break;
+    case 'clear': celebrationArmed=false;stopCelebration();notify('stop-celebration');clearTimeout(syncTimer);clearTimeout(resultTimer);syncFailed=false;resultAttempts=0;resetAnswers();clearTimeout(draftTimer);state.game='';state.task=null;state.files=[];state.base.clear();editor.setModel(null);models.forEach(m=>m.dispose());models.clear();$('description').textContent='请选择作业。';$('local-results').replaceChildren();$('test-cases').replaceChildren();updateButtons();break;
   }
 }
 

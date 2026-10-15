@@ -590,7 +590,7 @@ async fn evaluation_status_uses_ticket_and_failure_zero_is_terminal() {
         .and(query_param("port", "8000"))
         .respond_with(
             ResponseTemplate::new(200)
-                .set_body_json(json!({"status":"-1","test_sets":null,"last_compile_output":false})),
+                .set_body_json(json!({"running_code_message":"Compiling","running_code_status":1})),
         )
         .mount(&server)
         .await;

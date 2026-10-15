@@ -4,7 +4,7 @@
 #[path = "support/native_capture.rs"]
 mod native_capture;
 use educoder_ui::{AppWindow, Controller, webview::WebHost};
-use slint::{ComponentHandle, Timer, TimerMode};
+use slint::{ComponentHandle, Timer, TimerMode, winit_030::WinitWindowAccessor};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -15,16 +15,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     educoder_ui::chrome::initialize_backend()?;
     let runtime = tokio::runtime::Runtime::new()?;
     let app = AppWindow::new()?;
+    app.set_theme_mode(2);
     let _chrome = educoder_ui::chrome::WindowChrome::attach(&app);
     let controller = Controller::bind(&app, runtime.handle().clone());
     let host = WebHost::attach(&app, controller);
     let passed = Rc::new(Cell::new(false));
     let result = passed.clone();
+    let celebrated = Rc::new(Cell::new(false));
+    let celebration_result = celebrated.clone();
     let replies = Rc::new(RefCell::new(Vec::<serde_json::Value>::new()));
     let ipc_replies = replies.clone();
     let ipc_ui = app.as_weak();
     app.on_web_event(move |body| {
         let value: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        if value["action"] == "native-celebration" {
+            celebration_result.set(value["payload"]["visible"] == true && value["payload"]["painted"] == true);
+        }
         if value["action"] == "answers" || value["action"] == "draft" {
             let data = if value["action"] == "answers" {
                 serde_json::json!({"answer":{"title":"Native preview","status":"public_samples_passed","editable_paths":["main.rs"],"files":[{"path":"answer/demo.rs","content":"fn main() { /* native answer */ }"}]},"cached":false,"stale":false})
@@ -32,6 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ipc_replies.borrow_mut().push(serde_json::json!({"reply_to":value["id"],"ok":true,"data":data}));
         }
         if value["action"] == "native-self-test" {
+            println!("Synthetic native details: {}",value["payload"]);
             result.set(
                 value["payload"]["ok"] == true
                     && ipc_ui
@@ -93,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 assert!(rounded_region(&app));
                 println!("Native avatar menu / rounded window / maximize-restore: true");
                 native_passed.set(true);
-                app.set_dark_mode(false);
+                app.set_theme_mode(1);app.set_dark_mode(false);
                 stage = 4;
             }
             4 => {
@@ -107,21 +114,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
         if stage == 5 && browser_passed.get() {
-            let _ = slint::quit_event_loop();
+            app.set_reduce_motion(false);app.set_celebration_game("native-demo".into());app.set_celebration_active(true);app.set_celebration_id(1);settle_ticks=0;stage=6;
+        }
+        if stage==6 {
+            settle_ticks+=1;
+            if settle_ticks==6 {
+                host.evaluate_when_ready(r#"
+                    const ac=document.querySelector('#ac-celebration'),c=document.querySelector('#confetti-canvas');
+                    const data=c.getContext('2d').getImageData(0,0,c.width,c.height).data;
+                    let painted=false;for(let i=3;i<data.length;i+=4){if(data[i]){painted=true;break;}}
+                    window.ipc.postMessage(JSON.stringify({action:'native-celebration',payload:{visible:!ac.hidden,painted}}));
+                "#);
+            }
+            if settle_ticks>=9 {
+                assert!(celebrated.get(),"WebView2 celebration must be visible and paint particles");
+                #[cfg(windows)]
+                app.window().with_winit_window(|window| {
+                    // GDI captures native chrome; WebView2 composition is checked above.
+                    let size=window.inner_size();let height=(46.0*window.scale_factor()) as u32;
+                    let pixels=native_capture::pixels(window,height);
+                    image::save_buffer("target/ui-previews/accepted-native-chrome.png",&pixels,size.width,height,image::ColorType::Rgba8).unwrap();
+                });
+                app.set_theme_mode(0);stage=7;settle_ticks=0;
+            }
+        }
+        if stage==7 {
+            settle_ticks+=1;
+            if settle_ticks>=3 {
+                app.window().with_winit_window(|window| {if let Some(theme)=window.theme(){assert_eq!(app.get_dark_mode(),theme==slint::winit_030::winit::window::Theme::Dark);}});
+                println!("Native whole-window celebration / follow system theme: true");
+                let _=slint::quit_event_loop();
+            }
         }
         if !sent && stage == 5 {
             sent = host.evaluate_when_ready(r#"
-                window.educoder.receive({type:'task', task:{game_identifier:'native-demo',title:'Native preview',description_markdown:'## Markdown ready\n<script>window.hacked=true</script>',can_submit:true},files:[{path:'main.rs',content:'fn main() {}',read_only:false}],drafts:[],samples:[],evaluation:{status:0,tests:[]}});
+                window.educoder.receive({type:'task', task:{game_identifier:'native-demo',title:'Native preview',description_markdown:'##Markdown ready\n<script>window.hacked=true</script>',can_submit:true},files:[{path:'main.rs',content:'fn main() {}',read_only:false}],drafts:[],samples:[],evaluation:{status:0,tests:[]}});
                 document.dispatchEvent(new PointerEvent('pointerdown'));
                 (async()=>{
-                    const wait=async predicate=>{for(let i=0;i<100;i++){if(predicate())return;await new Promise(r=>setTimeout(r,50));}throw Error('Native answers timed out');};
+                    const wait=async(predicate,label)=>{for(let i=0;i<100;i++){if(predicate())return;await new Promise(r=>setTimeout(r,50));}throw Error('Native timed out: '+label);};
                     document.querySelector('#answers').click();
-                    await wait(()=>document.querySelector('#answer-code').value.includes('native answer'));
+                    await wait(()=>document.querySelector('#answer-code').value.includes('native answer'),'answer loaded');
                     document.querySelector('#copy-answer').click();
-                    await wait(()=>document.querySelector('#answer-status').textContent.includes('已复制'));
+                    await wait(()=>document.querySelector('#answer-status').textContent.includes('已复制'),'copied');
                     document.querySelector('#import-answer').click();
-                    await wait(()=>!document.querySelector('#answer-dialog').open);
-                    window.ipc.postMessage(JSON.stringify({action:'native-self-test',payload:{ok:window.educoder.editor.getValue().includes('native answer') && window.educoder.editor.getModel().getLanguageId()==='rust' && document.querySelector('#description h2')?.textContent==='Markdown ready' && !window.hacked && !document.querySelector('#description script')}}));
+                    await wait(()=>!document.querySelector('#answer-dialog').open,'imported');
+                    const context=window.educoder.editor.getContribution('editor.contrib.contextmenu');
+                    const actions=context._getMenuActions(window.educoder.editor.getModel(),window.educoder.editor.contextMenuId);
+                    let menuReady=actions.some(a=>a.label==='Copy')&&actions.some(a=>a.label==='Paste');
+                    // Windows prevents background previews from retaining popup focus.
+                    // Physical menu opening is covered by the trusted Playwright click.
+                    window.ipc.postMessage(JSON.stringify({action:'native-self-test',payload:{ok:menuReady && window.educoder.editor.getValue().includes('native answer') && window.educoder.editor.getModel().getLanguageId()==='rust' && document.querySelector('#description h2')?.textContent==='Markdown ready' && !window.hacked && !document.querySelector('#description script')}}));
                 })().catch(e=>window.ipc.postMessage(JSON.stringify({action:'native-self-test',payload:{ok:false,error:e.message}})));
             "#);
         }

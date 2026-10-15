@@ -539,6 +539,25 @@ impl Controller {
         };
         let Some(app) = self.ui.upgrade() else { return };
         match message.action.as_str() {
+            "celebrate-ac" => {
+                let valid = self
+                    .workbench
+                    .lock()
+                    .expect("workbench")
+                    .document
+                    .as_ref()
+                    .is_some_and(|d| {
+                        d.details.task.game_identifier == message.context
+                            && d.details.evaluation.status == 2
+                    });
+                if valid {
+                    app.set_celebration_game(message.context.into());
+                    app.set_celebration_active(true);
+                    app.set_celebration_progress(0.0);
+                    app.set_celebration_id(app.get_celebration_id().wrapping_add(1));
+                }
+            }
+            "stop-celebration" => app.set_celebration_active(false),
             "answers" => {
                 let Some(id) = message.id else { return };
                 let course_id = self.state.lock().expect("UI state").course_id;

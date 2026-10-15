@@ -194,6 +194,18 @@ pub(crate) struct EvaluationResultDto {
 }
 impl EvaluationResultDto {
     pub fn parse(mut value: serde_json::Value) -> crate::Result<Option<Evaluation>> {
+        // Observed live: the build's progress endpoint returns only these two
+        // fields before a terminal response is available. No status is present.
+        if value.get("status").is_none()
+            && value
+                .get("running_code_message")
+                .is_some_and(|v| v.is_string())
+            && value
+                .get("running_code_status")
+                .is_some_and(|v| v.is_number())
+        {
+            return Ok(None);
+        }
         let status = value
             .get("status")
             .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()))
@@ -445,6 +457,13 @@ mod tests {
 
     #[test]
     fn evaluation_progress_is_not_a_completed_result_schema() {
+        assert!(
+            EvaluationResultDto::parse(
+                json!({"running_code_message":"Compiling","running_code_status":1})
+            )
+            .unwrap()
+            .is_none()
+        );
         for status in [json!(-1), json!("-1"), json!(-2)] {
             assert!(
                 EvaluationResultDto::parse(

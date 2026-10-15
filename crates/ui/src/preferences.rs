@@ -10,14 +10,14 @@ use std::sync::Arc;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub(super) struct Preferences {
-    pub dark: bool,
+    pub theme_mode: i32,
     pub accent: i32,
     pub toolchains: Toolchains,
 }
 impl Default for Preferences {
     fn default() -> Self {
         Self {
-            dark: true,
+            theme_mode: 0,
             accent: 0,
             toolchains: Toolchains::default(),
         }
@@ -26,7 +26,7 @@ impl Default for Preferences {
 
 fn read_ui(app: &AppWindow) -> Preferences {
     Preferences {
-        dark: app.get_dark_mode(),
+        theme_mode: app.get_theme_mode(),
         accent: app.get_accent_index(),
         toolchains: Toolchains {
             c: app.get_c_compiler().to_string(),
@@ -37,6 +37,33 @@ fn read_ui(app: &AppWindow) -> Preferences {
             java: app.get_java_runtime().to_string(),
             javac: app.get_java_compiler().to_string(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn theme_defaults_to_system_and_old_preferences_migrate_without_losing_tools() {
+        assert_eq!(Preferences::default().theme_mode, 0);
+        let tools = Toolchains {
+            c: "custom-cc".into(),
+            ..Toolchains::default()
+        };
+        let legacy: Preferences =
+            serde_json::from_value(serde_json::json!({"dark":false,"accent":2,"toolchains":tools}))
+                .unwrap();
+        assert_eq!(legacy.theme_mode, 0);
+        assert_eq!(legacy.accent, 2);
+        assert_eq!(legacy.toolchains.c, "custom-cc");
+        let mut selected = legacy;
+        selected.theme_mode = 2;
+        assert_eq!(
+            serde_json::from_value::<Preferences>(serde_json::to_value(selected).unwrap())
+                .unwrap()
+                .theme_mode,
+            2
+        );
     }
 }
 
@@ -52,7 +79,10 @@ impl Controller {
             {
                 let _ = ui.upgrade_in_event_loop(move |app| {
                     let prefs = saved.value;
-                    app.set_dark_mode(prefs.dark);
+                    app.set_theme_mode(prefs.theme_mode.clamp(0, 2));
+                    if prefs.theme_mode != 0 {
+                        app.set_dark_mode(prefs.theme_mode == 2);
+                    }
                     app.set_accent_index(prefs.accent.clamp(0, 2));
                     app.set_c_compiler(prefs.toolchains.c.clone().into());
                     app.set_cpp_compiler(prefs.toolchains.cpp.clone().into());
