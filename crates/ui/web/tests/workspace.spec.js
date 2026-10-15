@@ -9,6 +9,9 @@ test.beforeEach(async({page})=>{
       setTimeout(()=>{
         if(message.action==='draft'&&window.rejectDraft){window.educoder.receive({reply_to:message.id,ok:false,error:'草稿保存失败'});return;}
         if(message.action==='draft')window.drafts.push(message.payload);
+        if(message.action==='answers'){
+          setTimeout(()=>window.educoder.receive(window.answerError?{reply_to:message.id,ok:false,error:'网络请求失败'}:{reply_to:message.id,ok:true,data:window.answerReply??{answer:null,cached:false,stale:false}}),window.answerDelay??0);return;
+        }
         const data=message.action==='run'?{compilation:{exit_code:0,stdout:'',stderr:'',timed_out:false},samples:[{name:'样例 1',passed:true,output:{exit_code:0,stdout:'3\n',stderr:'',elapsed_ms:12,timed_out:false,truncated:false}}]}:
           message.action==='submit'?{can_submit:true,evaluation:{status:2,compile_output:'',tests:[]}}:{};
         window.educoder.receive({reply_to:message.id,ok:true,data});
@@ -21,6 +24,52 @@ test.beforeEach(async({page})=>{
     window.educoder.receive({type:'homework',title:'示例课堂 · 程序设计',games:[{identifier:'demo-game',position:1,name:'求和'}],game:'demo-game',can_enter:false});
     window.educoder.receive({type:'connection',connected:true});window.educoder.receive(frame);
   },frame);
+});
+
+const answer={title:'求和',status:'public_samples_passed',editable_paths:['main.rs'],files:[{path:'answer/求和.rs',content:'fn main() { println!("42"); }'},{path:'answer/helper.rs',content:'pub fn answer() -> i32 { 42 }'}]};
+
+test('answers can be viewed, copied and imported with drafts and undo preserved',async({page,context})=>{
+  await context.grantPermissions(['clipboard-read','clipboard-write']);
+  await page.evaluate(answer=>{window.answerReply={answer,cached:true,stale:false};window.educoder.editor.setValue('original local draft');},answer);
+  await page.click('#answers');await expect(page.locator('#answer-code')).toHaveValue(answer.files[0].content);
+  await expect(page.locator('#answer-status')).toContainText('本地缓存');
+  await page.click('#copy-answer');await expect(page.locator('#answer-status')).toContainText('已复制');
+  expect(await page.evaluate(()=>navigator.clipboard.readText())).toBe(answer.files[0].content);
+  await page.screenshot({path:'../../../target/ui-previews/answers-dark.png'});
+  await page.evaluate(()=>window.educoder.receive({type:'theme',dark:false,accent:'#3569b5'}));
+  await page.screenshot({path:'../../../target/ui-previews/answers-light.png'});
+  await page.click('#import-answer');await expect(page.locator('#answer-dialog')).not.toBeVisible();
+  expect(await page.evaluate(()=>window.educoder.editor.getValue())).toBe(answer.files[0].content);
+  await expect.poll(()=>page.evaluate(()=>window.drafts.at(-1).files[0].content)).toBe(answer.files[0].content);
+  expect(await page.evaluate(()=>window.drafts.some(d=>d.files[0].content==='original local draft'))).toBe(true);
+  await page.evaluate(()=>window.educoder.editor.trigger('test','undo',null));
+  expect(await page.evaluate(()=>window.educoder.editor.getValue())).toBe('original local draft');
+  expect(await page.evaluate(()=>window.messages.some(m=>['save','submit'].includes(m.action)))).toBe(false);
+});
+
+test('missing answers, errors and late responses from another task remain distinct',async({page})=>{
+  await page.click('#answers');await expect(page.locator('#answer-status')).toHaveText('未找到对应答案');
+  await expect(page.locator('#import-answer')).toBeDisabled();
+  await page.evaluate(()=>window.answerError=true);await page.click('#reload-answer');
+  await expect(page.locator('#answer-status')).toContainText('答案查找失败');
+  await page.evaluate(answer=>{window.answerError=false;window.answerDelay=200;window.answerReply={answer};},answer);
+  await page.click('#reload-answer');
+  await page.evaluate(frame=>{frame.task.game_identifier='other-task';window.educoder.receive(frame);},structuredClone(frame));
+  await expect(page.locator('#answer-dialog')).not.toBeVisible();
+  await page.waitForTimeout(300);
+  expect(await page.locator('#answer-code').inputValue()).toBe('');
+  expect(await page.evaluate(()=>window.educoder.editor.getValue())).toBe(frame.files[0].content);
+});
+
+test('header targets accept selected fragments but not a complete C program',async({page})=>{
+  await page.evaluate(({frame,answer})=>{frame.files=[{path:'src/student.h',content:'// header\n',read_only:false}];window.educoder.receive(frame);answer.files=[{path:'answer/program.c',content:'int value = 42;\nint main() {}'}];window.answerReply={answer};}, {frame:structuredClone(frame),answer:structuredClone(answer)});
+  await page.click('#answers');
+  await expect(page.locator('#answer-code')).toHaveValue('int value = 42;\nint main() {}');
+  await expect(page.locator('#import-answer')).toBeDisabled();
+  await page.evaluate(()=>{const area=document.getElementById('answer-code');area.setSelectionRange(0,15);area.dispatchEvent(new Event('select'));});
+  await page.click('#insert-answer');await expect(page.locator('#answer-dialog')).not.toBeVisible();
+  expect(await page.evaluate(()=>window.educoder.editor.getValue())).toContain('int value = 42;');
+  expect(await page.evaluate(()=>window.educoder.editor.getValue())).not.toContain('main()');
 });
 
 test('real Monaco, sanitized Markdown, multi-file drafts and local results',async({page})=>{

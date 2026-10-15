@@ -386,6 +386,42 @@ impl Controller {
         };
         let Some(app) = self.ui.upgrade() else { return };
         match message.action.as_str() {
+            "answers" => {
+                let Some(id) = message.id else { return };
+                let course_id = self.state.lock().expect("UI state").course_id;
+                let query = {
+                    let state = self.workbench.lock().expect("workbench");
+                    state
+                        .document
+                        .as_ref()
+                        .zip(state.homework.as_ref())
+                        .and_then(|(d, h)| {
+                            (d.details.task.game_identifier == message.context).then_some(
+                                educoder_core::answers::AnswerQuery {
+                                    course_id: course_id?,
+                                    homework_id: h.id,
+                                    position: d.details.task.position,
+                                },
+                            )
+                        })
+                };
+                let Some(query) = query else {
+                    self.reply(&app, &id, Err(Error::InvalidInput("当前题目已切换")));
+                    return;
+                };
+                let refresh = message.payload["refresh"].as_bool().unwrap_or(false);
+                let c = self.clone();
+                let ui = self.ui.clone();
+                self.runtime.spawn(async move {
+                    let result = async {
+                        let client = educoder_core::answers::AnswerClient::new()?;
+                        let answer = client.lookup(&query, refresh).await?;
+                        serde_json::to_value(answer).map_err(|_| Error::Response("答案数据"))
+                    }
+                    .await;
+                    let _ = ui.upgrade_in_event_loop(move |app| c.reply(&app, &id, result));
+                });
+            }
             "ready" => {
                 self.workbench.lock().expect("workbench").ready = true;
                 let state = self.workbench.lock().expect("workbench");

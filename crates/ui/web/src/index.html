@@ -19,7 +19,7 @@
   <div id="conflict" hidden>远端代码已发生变化，你的本地草稿已保留。<button id="keep-draft">保留草稿并继续</button><button id="discard-draft">使用远端版本</button></div>
   <main id="workspace">
     <section class="problem-pane">
-      <div class="section-heading">题目描述 <button id="refresh-task">刷新题目</button></div>
+      <div class="section-heading">题目描述 <span><button id="answers">查看答案</button> <button id="refresh-task">刷新题目</button></span></div>
       <article id="description" class="markdown"><p class="muted">选择作业后，在这里阅读题目。</p></article>
       <div id="enter-panel" hidden><p>此实训尚未创建个人实例。</p><button id="enter">进入实训</button></div>
     </section>
@@ -47,6 +47,15 @@
       </section>
     </section>
   </main>
+  <dialog id="answer-dialog" aria-labelledby="answer-title">
+    <div class="answer-heading"><strong id="answer-title">题目答案</strong><button id="close-answer" aria-label="关闭答案">×</button></div>
+    <p id="answer-status" role="status"></p>
+    <p class="muted">来源：github.com/flyingpig233-cpu/educoder-answer。仓库答案为本地验证版本，平台隐藏测试结果以实际评测为准。</p>
+    <div class="sample-toolbar"><select id="answer-files" aria-label="选择答案文件"></select><button id="reload-answer">重新查找</button><button id="copy-answer">复制答案代码</button></div>
+    <textarea id="answer-code" readonly aria-label="答案代码" spellcheck="false"></textarea>
+    <p class="muted">完整程序只可导入同类型代码文件；头文件或填空题请选取答案片段后插入。导入覆盖目标文件，可用 Ctrl+Z 撤销，不会自动保存或提交到头歌。</p>
+    <div class="sample-toolbar"><label>导入目标<select id="answer-target" aria-label="答案导入目标"></select></label><button id="import-answer">覆盖目标文件</button><button id="insert-answer">插入所选片段</button></div>
+  </dialog>
   <script type="module" src="app.js"></script>
 </body>
 </html>

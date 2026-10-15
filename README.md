@@ -161,6 +161,14 @@ let snapshot = client.get_task_snapshot("game_identifier").await?;
 
 核心库只向固定的头歌 HTTPS 域发送凭据，不开放任意 URL 请求，不跟随重定向。UI 应按错误类别提示重新登录或请求失败，不能将读取失败的错误文本当作代码保存。
 
+## 题目答案
+
+题目工作区的“查看答案”从 [educoder-answer](https://github.com/flyingpig233-cpu/educoder-answer) 读取公开 `index.json`，按仓库 README 规定的 `(course_id, homework_id, position)` 精确匹配，并读取对应 `answer_files`。未收录、留空或空代码显示“未找到对应答案”；网络或索引错误单独显示失败信息。答案与索引缓存 10 分钟，可手动“重新查找”；离线时已有答案以旧缓存标记显示。请求不携带头歌登录信息。
+
+答案窗口支持多文件查看和复制，可将完整代码覆盖到选定的同类型可编辑文件，或选取片段插入目标文件的光标/选区（切换目标时插入文件开头）。导入前后持久化本地草稿，支持 Ctrl+Z 撤销，不会自动保存到头歌或提交评测。仓库的独立程序与平台头文件/填空可能不同，完整 C 程序不能直接覆盖头文件；请选取需要的表达式或函数片段。仓库验证状态不代表隐藏测试通过。
+
+公开仓库只读诊断：`cargo run -p educoder-core --example answers -- <课程ID> <作业ID> <关卡序号>`，仅输出是否找到、文件数量和缓存状态。
+
 ## 目录
 
 ```text
@@ -173,6 +181,7 @@ crates/core/src/
   vault.rs        系统凭据存储
   error.rs        错误分类
   cache.rs        异步磁盘缓存与会话隔离
+  answers.rs      公开答案索引、精确匹配和代码缓存
   runner.rs       本地工具链与限时样例运行
 crates/core/examples/crawl.rs  诊断 CLI
 crates/ui/src/controller.rs  后台任务与界面状态协调

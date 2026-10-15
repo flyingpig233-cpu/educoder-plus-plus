@@ -21,6 +21,7 @@ const pending = new Map();
 const models = new Map();
 const state = { game: '', task: null, base: new Map(), files: [], busy: false, conflict: false, connected: false, samples: [], sampleIndex: 0, sequence: 0 };
 let draftTimer, draftQueue = Promise.resolve(), draftError = false, activeTab = 'local';
+let answerData = null, answerGame = '', answerSequence = 0, answerLoading = false, answerImporting = false;
 const editor = monaco.editor.create($('editor'), { theme:'vs-dark', automaticLayout:true, fontFamily:'Consolas, monospace', fontSize:14, lineHeight:22, minimap:{enabled:false}, scrollBeyondLastLine:false, smoothScrolling:true, padding:{top:14}, readOnly:true, ariaLabel:'代码编辑器', tabSize:4, insertSpaces:true, fixedOverflowWidgets:true });
 const language = path => ({rs:'rust',py:'python',c:'cpp',cpp:'cpp',cc:'cpp',cxx:'cpp',h:'cpp',java:'java',js:'javascript',mjs:'javascript',sql:'sql',sh:'shell'})[path.split('.').pop()?.toLowerCase()] || 'plaintext';
 
@@ -53,6 +54,8 @@ function updateButtons() {
   $('refresh-task').disabled = state.busy || !state.task || !state.connected;
   $('refresh-result').disabled = state.busy || !state.task || !state.connected;
   $('enter').disabled = state.busy || !state.connected;
+  $('answers').disabled = !state.task || state.busy;
+  updateAnswerButtons();
   $('dirty').textContent = hasChanges() ? (draftError ? '草稿保存失败' : '本地草稿') : '已同步';
   $('conflict').hidden = !state.conflict;
 }
@@ -62,6 +65,73 @@ function selectFile(path) {
   let model=models.get(key);
   if(!model){ model=monaco.editor.createModel(file.content, language(path), monaco.Uri.parse(`inmemory://educoder/${encodeURIComponent(state.game)}/${encodeURIComponent(path)}`)); models.set(key,model); }
   editor.setModel(model); editor.updateOptions({readOnly:!!file.read_only}); $('files').value=path; updateButtons();
+}
+
+function resetAnswers() {
+  answerSequence++; answerData=null; answerGame=''; answerLoading=false;
+  $('answer-dialog').close(); $('answer-code').value='';
+}
+function selectedAnswer() { return answerData?.files[Number($('answer-files').value)]; }
+function updateAnswerButtons() {
+  const file=selectedAnswer(), target=state.files.find(f=>f.path===$('answer-target').value&&!f.read_only);
+  const active=!!file&&answerGame===state.game&&!answerLoading&&!answerImporting;
+  $('copy-answer').disabled=!active;
+  $('reload-answer').disabled=answerLoading||answerImporting||!state.task;
+  const sameType=file&&target&&file.path.split('.').pop().toLowerCase()===target.path.split('.').pop().toLowerCase();
+  $('import-answer').disabled=!active||state.busy||!sameType;
+  $('insert-answer').disabled=!active||state.busy||!target||$('answer-code').selectionStart===$('answer-code').selectionEnd;
+  $('answer-target').disabled=answerImporting;
+  $('answer-files').disabled=answerImporting||!active;
+}
+function showAnswerFile() {
+  $('answer-code').value=selectedAnswer()?.content??'';
+  const file=selectedAnswer(), writable=state.files.filter(f=>!f.read_only);
+  const basename=path=>path.split('/').pop();
+  const exact=writable.find(f=>file&&basename(f.path)===basename(file.path));
+  options($('answer-target'),writable.map(f=>({value:f.path,text:f.path})),exact?.path??$('files').value);
+  updateAnswerButtons();
+}
+async function loadAnswers(refresh=false) {
+  if(!state.task||answerLoading)return;
+  const game=state.game, sequence=++answerSequence;
+  answerLoading=true;answerData=null;answerGame=game;
+  $('answer-dialog').showModal();$('answer-title').textContent=`答案 · ${state.task.title}`;
+  $('answer-status').textContent='正在查找答案…';$('answer-code').value='';options($('answer-files'),[]);updateAnswerButtons();
+  try {
+    const result=await request('answers',{refresh});
+    if(sequence!==answerSequence||game!==state.game)return;
+    answerData=result.answer;
+    const status=({public_samples_passed:'公开样例通过',statement_examples_passed:'题面推导测试通过'})[answerData?.status]??answerData?.status??'';
+    $('answer-status').textContent=answerData?`${answerData.title} · ${status}${result.stale?' · 更新失败，显示旧缓存':result.cached?' · 本地缓存':''}`:'未找到对应答案';
+    options($('answer-files'),(answerData?.files??[]).map((f,i)=>({value:String(i),text:f.path})),'0');showAnswerFile();
+  } catch(e) { if(sequence===answerSequence)$('answer-status').textContent=`答案查找失败：${e.message}，可点击重新查找。`; }
+  finally {if(sequence===answerSequence){answerLoading=false;updateAnswerButtons();}}
+}
+async function copyAnswer() {
+  const file=selectedAnswer();if(!file||answerGame!==state.game)return;
+  try {
+    try { await navigator.clipboard.writeText(file.content); }
+    catch { $('answer-code').focus();$('answer-code').select();if(!document.execCommand('copy'))throw new Error('剪贴板不可用，请选中代码手动复制'); }
+    $('answer-status').textContent='答案代码已复制';
+  } catch(e){$('answer-status').textContent=e.message;}
+}
+async function importAnswer(fragment=false) {
+  const file=selectedAnswer(), target=$('answer-target').value, game=state.game;
+  if(!file||answerGame!==game||state.busy||answerImporting)return;
+  if(!state.files.some(f=>f.path===target&&!f.read_only))return;
+  const area=$('answer-code'), text=fragment?area.value.slice(area.selectionStart,area.selectionEnd):file.content;
+  if(!text||(!fragment&&file.path.split('.').pop().toLowerCase()!==target.split('.').pop().toLowerCase()))return;
+  answerImporting=true;state.busy=true;updateButtons();
+  try {
+    await flushDraft();
+    if(game!==state.game||answerGame!==game)return;
+    const sameFile=$('files').value===target;
+    selectFile(target);
+    const range=fragment&&sameFile?editor.getSelection():fragment?new monaco.Range(1,1,1,1):editor.getModel().getFullModelRange();
+    editor.pushUndoStop();editor.executeEdits('answer-import',[{range,text,forceMoveMarkers:true}]);editor.pushUndoStop();
+    await flushDraft();$('answer-dialog').close();notice('答案已导入本地草稿，可用 Ctrl+Z 撤销；请检查代码后自行保存或提交。');editor.focus();
+  } catch(e){$('answer-status').textContent=e.message;}
+  finally {answerImporting=false;state.busy=false;updateButtons();}
 }
 editor.onDidChangeModelContent(() => { updateButtons(); clearTimeout(draftTimer); draftTimer=setTimeout(()=>flushDraft().catch(e=>error(e.message)),500); });
 editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, ()=>flushDraft().then(()=>notice('本地草稿已保存')).catch(e=>error(e.message)));
@@ -136,6 +206,7 @@ function receive(message) {
       if(message.can_enter){state.task=null;state.game='';state.files=[];editor.setModel(null);$('description').textContent='点击“进入实训”后可读取题目和代码。';updateButtons();}
       break;
     case 'task': {
+      if(state.game!==message.task.game_identifier)resetAnswers();
       const task=message.task; const previous=state.game; state.game=task.game_identifier;state.task=task;
       const drafts=new Map((message.drafts??[]).map(f=>[f.path,f.content]));
       state.conflict=message.conflict??false;
@@ -158,11 +229,21 @@ function receive(message) {
     case 'before-close': flushDraft().then(()=>notify('close-ready')).catch(e=>error(e.message));break;
     case 'before-logout': flushDraft().then(()=>notify('logout-ready')).catch(e=>error(e.message));break;
     case 'navigate': if(state.busy){error('请等待当前操作完成后再切换。');break;} flushDraft().then(()=>notify('navigate',message.target)).catch(e=>error(e.message));break;
-    case 'clear': clearTimeout(draftTimer);state.game='';state.task=null;state.files=[];state.base.clear();editor.setModel(null);models.forEach(m=>m.dispose());models.clear();$('description').textContent='请选择作业。';$('local-results').replaceChildren();$('test-cases').replaceChildren();updateButtons();break;
+    case 'clear': resetAnswers();clearTimeout(draftTimer);state.game='';state.task=null;state.files=[];state.base.clear();editor.setModel(null);models.forEach(m=>m.dispose());models.clear();$('description').textContent='请选择作业。';$('local-results').replaceChildren();$('test-cases').replaceChildren();updateButtons();break;
   }
 }
 
 $('files').onchange=()=>selectFile($('files').value);
+$('answers').onclick=()=>loadAnswers();
+$('reload-answer').onclick=()=>loadAnswers(true);
+$('close-answer').onclick=()=>{if(!answerImporting)$('answer-dialog').close();};
+$('answer-dialog').addEventListener('cancel',event=>{if(answerImporting)event.preventDefault();});
+$('answer-files').onchange=showAnswerFile;
+$('answer-target').onchange=updateAnswerButtons;
+$('answer-code').addEventListener('select',updateAnswerButtons);
+$('copy-answer').onclick=copyAnswer;
+$('import-answer').onclick=()=>importAnswer();
+$('insert-answer').onclick=()=>importAnswer(true);
 $('games').onchange=async()=>{const game=$('games').value;try{await flushDraft();notify('select-game',{game});}catch(e){error(e.message);$('games').value=state.game;}};
 $('back').onclick=()=>flushDraft().then(()=>notify('navigate',{page:'homeworks'})).catch(e=>error(e.message));
 $('settings').onclick=()=>notify('settings');

@@ -1,4 +1,5 @@
 //! Async Educoder platform access, independent of the desktop UI.
+pub mod answers;
 pub mod cache;
 mod client;
 mod dto;

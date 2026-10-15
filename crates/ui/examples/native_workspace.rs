@@ -5,7 +5,11 @@
 mod native_capture;
 use educoder_ui::{AppWindow, Controller, webview::WebHost};
 use slint::{ComponentHandle, Timer, TimerMode};
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Duration,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     educoder_ui::chrome::initialize_backend()?;
@@ -16,9 +20,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let host = WebHost::attach(&app, controller);
     let passed = Rc::new(Cell::new(false));
     let result = passed.clone();
+    let replies = Rc::new(RefCell::new(Vec::<serde_json::Value>::new()));
+    let ipc_replies = replies.clone();
     let ipc_ui = app.as_weak();
     app.on_web_event(move |body| {
         let value: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        if value["action"] == "answers" || value["action"] == "draft" {
+            let data = if value["action"] == "answers" {
+                serde_json::json!({"answer":{"title":"Native preview","status":"public_samples_passed","editable_paths":["main.rs"],"files":[{"path":"answer/demo.rs","content":"fn main() { /* native answer */ }"}]},"cached":false,"stale":false})
+            } else { serde_json::json!({}) };
+            ipc_replies.borrow_mut().push(serde_json::json!({"reply_to":value["id"],"ok":true,"data":data}));
+        }
         if value["action"] == "native-self-test" {
             result.set(
                 value["payload"]["ok"] == true
@@ -26,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .upgrade()
                         .is_some_and(|app| !app.get_account_menu_open()),
             );
-            println!("Native offline Monaco / Markdown / IPC: {}", result.get());
+            println!("Native offline Monaco / Markdown / answer copy-import / IPC: {}", result.get());
         }
     });
     app.set_page(2);
@@ -41,6 +53,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut settle_ticks = 0;
     tick.start(TimerMode::Repeated, Duration::from_millis(100), move || {
         let Some(app) = weak.upgrade() else { return };
+        for reply in replies.borrow_mut().drain(..) {
+            host.evaluate_when_ready(&format!("window.educoder.receive({reply})"));
+        }
         match stage {
             0 => {
                 app.invoke_show_account_menu();
@@ -98,7 +113,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             sent = host.evaluate_when_ready(r#"
                 window.educoder.receive({type:'task', task:{game_identifier:'native-demo',title:'Native preview',description_markdown:'## Markdown ready\n<script>window.hacked=true</script>',can_submit:true},files:[{path:'main.rs',content:'fn main() {}',read_only:false}],drafts:[],samples:[],evaluation:{status:0,tests:[]}});
                 document.dispatchEvent(new PointerEvent('pointerdown'));
-                setTimeout(()=>window.ipc.postMessage(JSON.stringify({action:'native-self-test',payload:{ok:window.educoder.editor.getModel().getLanguageId()==='rust' && document.querySelector('#description h2')?.textContent==='Markdown ready' && !window.hacked && !document.querySelector('#description script')}})),1000);
+                (async()=>{
+                    const wait=async predicate=>{for(let i=0;i<100;i++){if(predicate())return;await new Promise(r=>setTimeout(r,50));}throw Error('Native answers timed out');};
+                    document.querySelector('#answers').click();
+                    await wait(()=>document.querySelector('#answer-code').value.includes('native answer'));
+                    document.querySelector('#copy-answer').click();
+                    await wait(()=>document.querySelector('#answer-status').textContent.includes('已复制'));
+                    document.querySelector('#import-answer').click();
+                    await wait(()=>!document.querySelector('#answer-dialog').open);
+                    window.ipc.postMessage(JSON.stringify({action:'native-self-test',payload:{ok:window.educoder.editor.getValue().includes('native answer') && window.educoder.editor.getModel().getLanguageId()==='rust' && document.querySelector('#description h2')?.textContent==='Markdown ready' && !window.hacked && !document.querySelector('#description script')}}));
+                })().catch(e=>window.ipc.postMessage(JSON.stringify({action:'native-self-test',payload:{ok:false,error:e.message}})));
             "#);
         }
     });
