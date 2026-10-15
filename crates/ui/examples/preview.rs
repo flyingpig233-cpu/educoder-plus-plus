@@ -43,6 +43,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     window.set_size(PhysicalSize::new(1160, 760));
     app.show()?;
     snapshot(&app, "welcome-dark")?;
+    app.set_dark_mode(false);
+    snapshot(&app, "welcome-light")?;
+    window.set_size(PhysicalSize::new(900, 620));
+    snapshot(&app, "welcome-compact-light")?;
+    app.invoke_toggle_sidebar();
+    snapshot(&app, "welcome-collapsed-light")?;
+    app.invoke_toggle_sidebar();
+    app.set_busy(true);
+    snapshot(&app, "welcome-loading-light")?;
+    app.set_busy(false);
+    app.set_dark_mode(true);
+    window.set_size(PhysicalSize::new(1160, 760));
     app.set_connected(true);
     app.set_has_session(true);
     app.set_user_name("预览账号 · 示例数据".into());
@@ -108,7 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     window.set_size(PhysicalSize::new(900, 620));
     snapshot(&app, "compact-light")?;
     app.set_login_open(true);
-    app.set_error_message("Cookie 文件无法读取，请检查路径后重试。".into());
+    app.set_error_message("无法读取登录会话，请完成微信扫码确认后重试。".into());
     snapshot(&app, "login-light")?;
     app.set_login_open(false);
     app.set_error_message("".into());

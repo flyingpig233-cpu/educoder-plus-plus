@@ -87,8 +87,6 @@ impl Controller {
             cleanup_pending: AtomicBool::new(false),
         });
         let c = controller.clone();
-        app.on_import_session(move |path| c.import(path.to_string()));
-        let c = controller.clone();
         app.on_select_course(move |id| {
             if let Ok(id) = id.parse::<u64>() {
                 c.select_course(id);
@@ -173,11 +171,7 @@ impl Controller {
         let vault = self.vault.clone();
         self.spawn(
             async move {
-                let session = if let Some(path) = std::env::var_os("EDUCODER_COOKIES") {
-                    Some(Session::from_file(path).await?)
-                } else {
-                    vault.load().await?
-                };
+                let session = vault.load().await?;
                 let Some(session) = session else {
                     return Ok::<_, Error>(None);
                 };
@@ -209,33 +203,6 @@ impl Controller {
                     c.authenticate_current();
                 }
                 Ok(None) => app.set_notice("连接头歌账号后，即可查看课堂作业。".into()),
-                Err(error) => c.fail(app, error),
-            },
-        );
-    }
-
-    fn import(self: &Arc<Self>, path: String) {
-        let Some(app) = self.ui.upgrade() else {
-            return;
-        };
-        if app.get_busy() || self.operation.load(Ordering::SeqCst) {
-            return;
-        }
-        let path = path.trim().trim_matches('"').to_owned();
-        let vault = self.vault.clone();
-        self.spawn(
-            async move {
-                let session = Session::from_file(path).await?;
-                let login = authenticate(session.clone()).await?;
-                let warning = if vault.save(&session).await.is_err() {
-                    "已连接，但系统凭据库未能保存会话；下次启动需要重新导入。".to_owned()
-                } else {
-                    String::new()
-                };
-                Ok::<_, Error>((login, warning))
-            },
-            |c, app, result| match result {
-                Ok((login, warning)) => c.connected(app, login, warning),
                 Err(error) => c.fail(app, error),
             },
         );
@@ -276,7 +243,6 @@ impl Controller {
         app.set_has_session(true);
         app.set_connected(true);
         app.set_login_open(false);
-        app.set_cookie_path("".into());
         app.set_user_avatar(slint::Image::default());
         app.invoke_hide_account_menu();
         app.set_course_query("".into());

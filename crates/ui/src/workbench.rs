@@ -37,10 +37,7 @@ struct TextFile {
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Draft {
     files: Vec<TextFile>,
-    baseline: Vec<TextFile>,
     samples: Vec<Sample>,
-    #[serde(default)]
-    conflict: bool,
 }
 struct DisplayOptions {
     cached: bool,
@@ -699,8 +696,7 @@ impl Controller {
             pending,
             force,
         } = options;
-        let conflict = draft_conflicts(&document, &draft);
-        let message = document_message(&document, &draft, cached, pending, conflict, force);
+        let message = document_message(&document, &draft, cached, pending, force);
         let progress = {
             let mut state = self.workbench.lock().expect("workbench");
             if state.version != version {
@@ -836,7 +832,6 @@ impl Controller {
             "draft" => self.save_draft(message),
             "refresh" => self.load_game(&message.context, true, message.id),
             "enter" => self.enter_workbench(message),
-            "resolve-conflict" | "discard-draft" => self.resolve_draft(message),
             "sync" | "submit" | "run" | "result" => self.perform_operation(message),
             _ => {}
         }
@@ -917,55 +912,6 @@ impl Controller {
                 .await
                 .map(|_| json!({}));
             let _ = ui.upgrade_in_event_loop(move |app| c.reply(&app, &id, result));
-        });
-    }
-
-    fn resolve_draft(self: &Arc<Self>, message: Message) {
-        let Some(id) = message.id else { return };
-        let Some(_app) = self.ui.upgrade() else {
-            return;
-        };
-        let document = self.workbench.lock().expect("workbench").document.clone();
-        let cache = self.state.lock().expect("UI state").cache.clone();
-        let (Some(document), Some(cache)) = (document, cache) else {
-            return;
-        };
-        if document.details.task.game_identifier != message.context {
-            return;
-        }
-        let discard = message.action == "discard-draft";
-        let c = self.clone();
-        let ui = self.ui.clone();
-        let version = self.workbench.lock().expect("workbench").version;
-        self.runtime.spawn(async move {
-            let key = format!("draft:{}", message.context);
-            let mut draft = cache
-                .get::<Draft>(&key, Duration::MAX)
-                .await
-                .map(|v| v.value)
-                .unwrap_or_default();
-            if discard {
-                draft.files = text_files(&document.files);
-            }
-            draft.baseline = text_files(&document.files);
-            draft.conflict = false;
-            let result = cache.put(&key, &draft).await;
-            let _ = ui.upgrade_in_event_loop(move |app| {
-                if discard && result.is_ok() {
-                    c.show_document(
-                        &app,
-                        version,
-                        document,
-                        draft,
-                        DisplayOptions {
-                            cached: false,
-                            pending: false,
-                            force: true,
-                        },
-                    );
-                }
-                c.reply(&app, &id, result.map(|_| json!({})));
-            });
         });
     }
 
@@ -1128,14 +1074,8 @@ impl Controller {
                     {
                         return Err(Error::WriteUncertain);
                     }
-                    if let Some(draft) = store
-                        .get::<Draft>(&format!("draft:{}", message.context), Duration::MAX)
-                        .await
-                        && draft_conflicts(&document, &draft.value) {
-                            return Err(Error::Conflict);
-                        }
                 }
-                let details = prepare_write(&client, &document, &files).await?;
+                let details = prepare_write(&client, &document).await?;
                 if let Some(workspace)=c.workspace_cache(){workspace.invalidate_reads().await;}
                 if let Some(store) = &cache {
                     if message.action == "sync" {
@@ -1281,18 +1221,6 @@ impl Drop for OperationGuard {
     }
 }
 
-fn text_files(files: &[CodeFile]) -> Vec<TextFile> {
-    files
-        .iter()
-        .filter_map(|f| {
-            f.text().ok().map(|text| TextFile {
-                path: f.path.clone(),
-                content: text.into(),
-            })
-        })
-        .collect()
-}
-
 fn text_code_files(files: &[TextFile]) -> Vec<CodeFile> {
     files
         .iter()
@@ -1330,31 +1258,11 @@ fn validate_text_files(document: &Document, files: &[TextFile]) -> Result<()> {
     }
     Ok(())
 }
-fn draft_conflicts(document: &Document, draft: &Draft) -> bool {
-    draft.conflict
-        || draft.files.iter().any(|edited| {
-            let base = draft.baseline.iter().find(|f| f.path == edited.path);
-            let remote = document
-                .files
-                .iter()
-                .find(|f| f.path == edited.path)
-                .and_then(|f| f.text().ok());
-            match (base, remote) {
-                (Some(base), Some(remote)) => {
-                    edited.content != base.content
-                        && remote != base.content
-                        && edited.content != remote
-                }
-                _ => true,
-            }
-        })
-}
 fn document_message(
     document: &Document,
     draft: &Draft,
     cached: bool,
     pending: bool,
-    conflict: bool,
     force: bool,
 ) -> Value {
     let files = document
@@ -1378,27 +1286,12 @@ fn document_message(
         },
         "files": files, "drafts": draft.files, "samples": draft.samples,
         "evaluation": document.details.evaluation,
-        "cached": cached, "conflict": conflict, "force": force
+        "cached": cached, "force": force
     })
 }
-async fn prepare_write(
-    client: &EducoderClient,
-    document: &Document,
-    files: &[TextFile],
-) -> Result<TaskDetails> {
-    for file in files {
-        let remote = client
-            .get_file_content(&document.details.task.game_identifier, &file.path)
-            .await?;
-        let base = document
-            .files
-            .iter()
-            .find(|f| f.path == file.path)
-            .ok_or(Error::Conflict)?;
-        if remote.content != base.content {
-            return Err(Error::Conflict);
-        }
-    }
+// Local editor contents are authoritative. Refresh the submission context, but
+// do not reject writes because a cached baseline differs from remote code.
+async fn prepare_write(client: &EducoderClient, document: &Document) -> Result<TaskDetails> {
     let details = client
         .get_task_details(
             &document.details.task.game_identifier,
@@ -1454,29 +1347,36 @@ mod tests {
         }
     }
     #[test]
-    fn drafts_use_three_way_conflicts_and_preserve_binary_helpers() {
+    fn legacy_conflicted_drafts_restore_local_contents() {
+        let draft: Draft = serde_json::from_value(json!({
+            "files": [{"path": "main.rs", "content": "local"}],
+            "baseline": [{"path": "main.rs", "content": "old"}],
+            "samples": [], "conflict": true
+        }))
+        .unwrap();
+        let frame = document_message(&document(), &draft, true, false, false);
+        assert_eq!(frame["drafts"][0]["content"], "local");
+        assert!(frame.get("conflict").is_none());
+    }
+    #[test]
+    fn local_drafts_override_remote_code_and_preserve_binary_helpers() {
         let doc = document();
         let mut draft = Draft {
             files: vec![TextFile {
                 path: "main.rs".into(),
                 content: "local".into(),
             }],
-            baseline: vec![TextFile {
-                path: "main.rs".into(),
-                content: "old".into(),
-            }],
             ..Default::default()
         };
-        assert!(draft_conflicts(&doc, &draft));
-        draft.baseline[0].content = "remote".into();
-        assert!(!draft_conflicts(&doc, &draft));
         assert!(validate_text_files(&doc, &draft.files).is_ok());
         let merged = merge_files(&doc.files, &draft.files);
         assert_eq!(merged[0].content, b"local");
         assert_eq!(merged[1].content, vec![255]);
-        let frame = document_message(&doc, &draft, true, false, false, false);
+        let frame = document_message(&doc, &draft, true, false, false);
         assert_eq!(frame["files"][1]["read_only"], true);
         assert!(frame.get("submission").is_none());
+        assert!(frame.get("conflict").is_none());
+        assert_eq!(frame["drafts"][0]["content"], "local");
         draft.files.push(draft.files[0].clone());
         assert!(validate_text_files(&doc, &draft.files).is_err());
         draft.files[1].path = "../outside".into();

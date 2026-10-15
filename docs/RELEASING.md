@@ -1,6 +1,6 @@
 # Windows 单文件发布
 
-1.0 发布目标为 `x86_64-pc-windows-msvc`。构建机需要 Rust、Node.js/npm 和 MSVC/Windows SDK；使用者无需安装这些开发工具。
+1.1 发布目标为 `x86_64-pc-windows-msvc`。构建机需要 Rust、Node.js/npm 和 MSVC/Windows SDK；使用者无需安装这些开发工具。
 
 ## 构建
 
@@ -40,8 +40,8 @@ powershell -ExecutionPolicy Bypass -File scripts/verify-windows.ps1
 
 ## GitHub Releases
 
-完成核验后检查 diff，提交源码并推送，创建对应提交的 `v1.0.0` 标签。创建 Release 草稿，上传 EXE、SHA-256 清单和许可文件，确认资产完整后发布。已有版本和标签不得覆盖。
+完成核验后检查 diff，提交源码并推送，创建对应提交的 `v1.1.0` 标签。创建 Release 草稿，上传 EXE、SHA-256 清单和许可文件，确认资产完整后发布。已有版本和标签不得覆盖。
 
 发布说明包含功能摘要、系统要求、可移植性检查结果和已知限制。无需将构建产物、缓存或账号数据提交到 Git。
 
-1.0.0 的实际验证环境、结果及已知限制见 [发布记录](releases/1.0.0.md)。
+1.1.0 的实际验证结果及已知限制见 [发布记录](releases/1.1.0.md)；历史版本见 [1.0.0 发布记录](releases/1.0.0.md)。

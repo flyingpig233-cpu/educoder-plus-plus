@@ -30,6 +30,8 @@ try {
     try {
         $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
         $process = Start-Process -FilePath $copy -WorkingDirectory $mainDir -WindowStyle Hidden -PassThru
+        # Retain the handle so Windows PowerShell can read ExitCode after exit.
+        $null = $process.Handle
         try {
             Start-Sleep -Seconds 5
             $process.Refresh()
@@ -48,6 +50,7 @@ try {
             $exe = Join-Path $dir "$example.exe"
             Copy-Item -LiteralPath $source -Destination $exe
             $process = Start-Process -FilePath $exe -WorkingDirectory $dir -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $dir 'stdout.log') -RedirectStandardError (Join-Path $dir 'stderr.log')
+            $null = $process.Handle
             try {
                 if (-not $process.WaitForExit(60000)) { throw "$example timed out" }
                 Get-Content (Join-Path $dir 'stdout.log') | Write-Output

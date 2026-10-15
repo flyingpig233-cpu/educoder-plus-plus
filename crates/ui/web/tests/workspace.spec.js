@@ -244,13 +244,37 @@ test('submission is single-shot and retains edits made during evaluation',async(
   await expect(page.locator('#dirty')).toHaveText('本地草稿');
 });
 
-test('remote changes preserve local text and require explicit conflict resolution',async({page})=>{
+test('remote changes keep local edits and sync and submit them without conflict resolution',async({page})=>{
   await page.evaluate(()=>window.educoder.editor.setValue('local draft'));
   await page.evaluate(frame=>{frame.files[0].content='new remote version';frame.conflict=true;window.educoder.receive(frame);},structuredClone(frame));
-  await expect(page.locator('#conflict')).toBeVisible();await expect(page.locator('#submit')).toBeDisabled();
   expect(await page.evaluate(()=>window.educoder.editor.getValue())).toBe('local draft');
-  await page.click('#keep-draft');await expect(page.locator('#conflict')).toBeHidden();
-  expect(await page.evaluate(()=>window.educoder.editor.getValue())).toBe('local draft');
+  await expect.poll(()=>page.evaluate(()=>window.messages.filter(m=>m.action==='sync').length)).toBe(1);
+  expect(await page.evaluate(()=>window.messages.find(m=>m.action==='sync').payload.files[0].content)).toBe('local draft');
+  await expect(page.locator('#submit')).toBeEnabled();
+  await page.click('#submit');
+  await expect.poll(()=>page.evaluate(()=>window.messages.filter(m=>m.action==='submit').length)).toBe(1);
+  expect(await page.evaluate(()=>window.messages.find(m=>m.action==='submit').payload.files[0].content)).toBe('local draft');
+  expect(await page.evaluate(()=>window.messages.some(m=>m.action==='resolve-conflict'))).toBe(false);
+});
+
+test('refresh preserves previously synced local code when remote code changes',async({page})=>{
+  await page.evaluate(frame=>{frame.files[0].content='changed remotely';window.educoder.receive(frame);},structuredClone(frame));
+  expect(await page.evaluate(()=>window.educoder.editor.getValue())).toBe(frame.files[0].content);
+  await expect.poll(()=>page.evaluate(()=>window.messages.filter(m=>m.action==='sync').length)).toBe(1);
+  expect(await page.evaluate(()=>window.messages.find(m=>m.action==='sync').payload.files[0].content)).toBe(frame.files[0].content);
+});
+
+test('cached legacy conflicted drafts restore silently and sync local code',async({page})=>{
+  await page.evaluate(frame=>{
+    window.educoder.receive({type:'clear'});
+    frame.drafts=[{path:'main.rs',content:'restored local draft'}];
+    frame.cached=true;frame.conflict=true;
+    window.educoder.receive(frame);
+  },structuredClone(frame));
+  expect(await page.evaluate(()=>window.educoder.editor.getValue())).toBe('restored local draft');
+  await expect(page.locator('#notice')).toBeHidden();
+  await expect.poll(()=>page.evaluate(()=>window.messages.filter(m=>m.action==='sync').length)).toBe(1);
+  expect(await page.evaluate(()=>window.messages.find(m=>m.action==='sync').payload.files[0].content)).toBe('restored local draft');
 });
 
 test('logout and window close wait for durable drafts, with failures blocking logout',async({page})=>{

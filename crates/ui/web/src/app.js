@@ -23,7 +23,7 @@ self.MonacoEnvironment = { getWorker: () => new Worker(new URL('editor.worker.js
 const $ = id => document.getElementById(id);
 const pending = new Map();
 const models = new Map();
-const state = { game: '', task: null, base: new Map(), files: [], busy: false, conflict: false, connected: false, samples: [], sampleIndex: 0, sequence: 0 };
+const state = { game: '', task: null, base: new Map(), files: [], busy: false, connected: false, samples: [], sampleIndex: 0, sequence: 0 };
 let draftTimer, draftQueue = Promise.resolve(), draftError = false, activeTab = 'local';
 let answerData = null, answerGame = '', answerSequence = 0, answerLoading = false, answerImporting = false;
 let syncTimer, syncPromise = null, syncFailed = false, resultTimer, resultAttempts = 0;
@@ -57,7 +57,7 @@ function allFiles() { return state.files.filter(f => !f.read_only).map(f => ({ p
 function hasChanges() { return allFiles().some(f => state.base.get(f.path) !== f.content); }
 function updateButtons() {
   const writable = !!state.task && state.files.some(f => !f.read_only);
-  $('submit').disabled = state.busy || !!syncPromise || syncFailed || !state.connected || !state.task?.can_submit || state.conflict || !writable;
+  $('submit').disabled = state.busy || !!syncPromise || syncFailed || !state.connected || !state.task?.can_submit || !writable;
   $('sync-status').textContent = syncPromise?'正在同步到头歌…':syncFailed?'同步失败 · 草稿已保留':!state.connected?'离线 · 草稿已保留':hasChanges()?'等待自动同步':'已同步到头歌';
   $('run').disabled = state.busy || !writable;
   $('files').disabled = state.files.length === 0;
@@ -69,7 +69,6 @@ function updateButtons() {
   $('answers').disabled = !state.task || state.busy;
   updateAnswerButtons();
   $('dirty').textContent = hasChanges() ? (draftError ? '草稿保存失败' : '本地草稿') : '';
-  $('conflict').hidden = !state.conflict;
 }
 function selectFile(path) {
   const file=state.files.find(f=>f.path===path); if(!file)return;
@@ -155,7 +154,7 @@ function scheduleSync() {
 }
 async function synchronize() {
   if(syncPromise)return syncPromise;
-  if(state.busy||syncFailed||!state.connected||!state.task?.can_submit||state.conflict||!hasChanges())return;
+  if(state.busy||syncFailed||!state.connected||!state.task?.can_submit||!hasChanges())return;
   const game=state.game, sent=allFiles();
   syncPromise=(async()=>{
     try {
@@ -191,7 +190,7 @@ function showSamples() {
 function flushDraft() {
   clearTimeout(draftTimer); storeSample();
   if(!state.game || !state.task) return draftQueue;
-  const payload={ files:allFiles(), baseline:[...state.base].map(([path,content])=>({path,content})), samples:structuredClone(state.samples), conflict:state.conflict };
+  const payload={ files:allFiles(), samples:structuredClone(state.samples) };
   const game=state.game;
   draftQueue=draftQueue.catch(()=>{}).then(async()=>{
     try { await request('draft',{...payload,game}); draftError=false; }
@@ -281,10 +280,8 @@ function receive(message) {
       if(state.game!==message.task.game_identifier){resetAnswers();celebrationArmed=false;stopCelebration();notify('stop-celebration');}
       const task=message.task; const previous=state.game; state.game=task.game_identifier;state.task=task;
       const drafts=new Map((message.drafts??[]).map(f=>[f.path,f.content]));
-      state.conflict=message.conflict??false;
       state.files=message.files;
-      for(const file of state.files){const key=`${state.game}:${file.path}`;const model=models.get(key);const oldBase=state.base.get(file.path);const preserve=previous===state.game && model && model.getValue()!==oldBase && !message.force;
-        if(preserve && oldBase!==file.content)state.conflict=true;
+      for(const file of state.files){const key=`${state.game}:${file.path}`;const model=models.get(key);const preserve=previous===state.game && model && !file.read_only && !message.force;
         const content=message.force?file.content:(drafts.get(file.path)??file.content);
         if(model&&!preserve&&model.getValue()!==content)model.setValue(content);file.editor_content=content;
       }
@@ -295,7 +292,7 @@ function receive(message) {
       for(const file of state.files){const key=`${state.game}:${file.path}`;if(!models.has(key))models.set(key,monaco.editor.createModel(file.editor_content,language(file.path),monaco.Uri.parse(`inmemory://educoder/${encodeURIComponent(state.game)}/${encodeURIComponent(file.path)}`)));}
       if(state.files.length)selectFile($('files').value);else{editor.setModel(null);editor.updateOptions({readOnly:true});}
       state.samples=message.samples?.length?message.samples:message.evaluation.tests.filter(t=>t.public&&t.input!=null).map((t,i)=>({name:`样例 ${i+1}`,input:t.input,expected:t.expected}));
-      if(!state.samples.length)state.samples=[{name:'自定义样例 1',input:'',expected:null}];state.sampleIndex=0;showSamples();showEvaluation(message.evaluation);updateButtons();scheduleSync();notice(message.cached?'已显示缓存题目和本地草稿。':'');break;
+      if(!state.samples.length)state.samples=[{name:'自定义样例 1',input:'',expected:null}];state.sampleIndex=0;showSamples();showEvaluation(message.evaluation);updateButtons();scheduleSync();notice('');break;
     }
     case 'notice': notice(message.message);break;
     case 'error': error(message.message);break;
@@ -324,8 +321,6 @@ for(const action of ['submit','run'])$(action).onclick=()=>operation(action);
 $('refresh-result').onclick=()=>operation('result').then(()=>setTab('remote'));
 $('refresh-task').onclick=()=>operation('refresh');
 $('enter').onclick=()=>operation('enter');
-$('keep-draft').onclick=async()=>{try{await flushDraft();await request('resolve-conflict');state.conflict=false;updateButtons();}catch(e){error(e.message);}};
-$('discard-draft').onclick=()=>request('discard-draft').catch(e=>error(e.message));
 document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>setTab(button.dataset.tab));
 $('samples').onchange=()=>{storeSample();state.sampleIndex=Number($('samples').value);showSamples();};
 $('add-sample').onclick=()=>{storeSample();if(state.samples.length>=100)return;state.samples.push({name:`自定义样例 ${state.samples.length+1}`,input:'',expected:null});state.sampleIndex=state.samples.length-1;showSamples();};

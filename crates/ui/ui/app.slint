@@ -234,11 +234,9 @@ export component AppWindow inherits Window {
     in-out property <bool> login-open: false;
     in-out property <bool> browser-login-open: false;
     in-out property <bool> login-reading: false;
-    private property <bool> login-advanced: false;
     callback start-browser-login;
     callback finish-browser-login;
     callback cancel-browser-login;
-    in-out property <string> cookie-path;
     in-out property <string> user-name: "尚未连接头歌";
     in-out property <string> course-title: "课堂作业";
     in-out property <string> selected-course-id;
@@ -253,7 +251,6 @@ export component AppWindow inherits Window {
     in-out property <int> kind: 0;
     in-out property <[CourseRow]> courses;
     in-out property <[HomeworkRow]> homeworks;
-    callback import-session(string);
     callback select-course(string);
     callback search-courses(string);
     callback change-kind(int);
@@ -430,6 +427,7 @@ export component AppWindow inherits Window {
           opacity: root.page-reveal;
             horizontal-stretch: 1; background: Theme.canvas;
             VerticalLayout {
+                width: 100%; height: 100%;
                 padding: 32px; spacing: 22px;
                 HorizontalLayout {
                     height: 24px;
@@ -469,8 +467,7 @@ export component AppWindow inherits Window {
                     }
                 }
                 Rectangle { height: 1px; background: Theme.line; }
-                ScrollView {
-                    visible: root.homeworks.length > 0;
+                if root.homeworks.length > 0: ScrollView {
                     vertical-stretch: 1; content-width: self.width;
                     VerticalLayout {
                         spacing: 10px;
@@ -509,11 +506,15 @@ export component AppWindow inherits Window {
                 if root.homeworks.length == 0: Rectangle {
                     vertical-stretch: 1;
                     VerticalLayout {
+                        width: 100%; height: 100%;
                         alignment: center; spacing: 16px;
                         if root.busy || root.has-session: Text { text: root.busy ? "···" : "▤"; color: Theme.muted; font-size: 40px; horizontal-alignment: center; }
-                        if !root.busy && !root.has-session: Image {
-                            width: 52px; height: 52px;
-                            source: @image-url("../assets/app-icon.svg"); image-fit: contain;
+                        if !root.busy && !root.has-session: HorizontalLayout {
+                            alignment: center;
+                            Image {
+                                width: 52px; height: 52px;
+                                source: @image-url("../assets/app-icon.svg"); image-fit: contain;
+                            }
                         }
                         Text { text: root.busy ? "正在获取课堂数据" : (!root.has-session ? "从你的课堂开始" : (root.error-message != "" ? "暂时无法显示作业" : (root.has-course ? "这一页还没有作业" : "选择一个课堂"))); color: Theme.text; font-size: 20px; font-weight: 500; horizontal-alignment: center; }
                         Text { text: root.busy ? "加载完成后，作业会显示在这里。" : (!root.has-session ? "登录头歌账号，即可浏览课堂和作业。" : "可以切换课堂、作业类型或刷新列表。"); color: Theme.muted; font-size: 13px; horizontal-alignment: center; }
@@ -597,24 +598,18 @@ export component AppWindow inherits Window {
         TouchArea { }
         if !root.browser-login-open: Rectangle {
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-            width: 560px; height: root.login-advanced ? 470px : 380px;
+            width: 560px; height: 340px;
             border-radius: 16px; background: Theme.canvas; border-width: 1px; border-color: Theme.line;
             VerticalLayout {
                 padding: 28px; spacing: 18px;
                 Text { text: "连接你的头歌账号"; color: Theme.text; font-size: 22px; font-weight: 600; }
-                Text { text: "在应用内打开头歌官方登录页。登录后点击「已完成登录」，验证并保存会话，无需导出文件。"; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
-                ActionButton { text: "打开头歌登录页"; primary: true; enabled: !root.busy; clicked => { root.start-browser-login(); } }
-                ActionButton { text: root.login-advanced ? "收起文件导入" : "其他方式：导入 Cookie 文件"; quiet: true; clicked => { root.login-advanced = !root.login-advanced; } }
-                if root.login-advanced: InputField {
-                    text <=> root.cookie-path; placeholder: "例如 C:\\private\\cookies.txt";
-                    accepted => { if !root.busy && root.cookie-path != "" { root.import-session(root.cookie-path); } }
-                }
+                Text { text: "使用微信扫描头歌官方二维码，确认登录后点击「已完成登录」，验证并保存会话。"; color: Theme.muted; font-size: 13px; wrap: word-wrap; }
+                ActionButton { text: "微信扫码登录"; primary: true; enabled: !root.busy; clicked => { root.start-browser-login(); } }
                 Text { text: "登录成功后，会话将保存在系统凭据库中。"; color: Theme.muted; font-size: 12px; }
                 if root.error-message != "": Text { text: root.error-message; color: Theme.warning; font-size: 12px; wrap: word-wrap; max-height: 48px; overflow: elide; }
                 HorizontalLayout {
                     spacing: 10px; alignment: end;
-                    ActionButton { text: "取消"; enabled: !root.busy; clicked => { root.login-open = false; root.cookie-path = ""; } }
-                    if root.login-advanced: ActionButton { width: 130px; text: root.busy ? "正在连接…" : "导入并连接"; primary: true; enabled: !root.busy && root.cookie-path != ""; clicked => { root.import-session(root.cookie-path); } }
+                    ActionButton { text: "取消"; enabled: !root.busy; clicked => { root.login-open = false; } }
                 }
             }
         }
@@ -623,11 +618,11 @@ export component AppWindow inherits Window {
             border-radius: 12px; background: Theme.canvas; border-width: 1px; border-color: Theme.line;
             VerticalLayout {
                 padding: 16px; spacing: 12px;
-                Text { height: 32px; text: "头歌官方登录 · 完成后点击「已完成登录」"; color: Theme.text; font-size: 15px; font-weight: 600; }
+                Text { height: 32px; text: "微信扫码登录 · 确认后点击「已完成登录」"; color: Theme.text; font-size: 15px; font-weight: 600; }
                 Rectangle { vertical-stretch: 1; background: #ffffff; }
                 HorizontalLayout {
                     height: 44px; spacing: 12px;
-                    Text { horizontal-stretch: 1; text: root.error-message != "" ? root.error-message : "请在官方页面完成登录和验证码；第三方授权弹窗暂不支持。"; color: root.error-message != "" ? Theme.warning : Theme.muted; wrap: word-wrap; font-size: 12px; }
+                    Text { horizontal-stretch: 1; text: root.error-message != "" ? root.error-message : "请使用微信扫一扫，并在手机上确认登录。"; color: root.error-message != "" ? Theme.warning : Theme.muted; wrap: word-wrap; font-size: 12px; }
                     ActionButton { text: "取消"; enabled: !root.busy; clicked => { root.cancel-browser-login(); } }
                     ActionButton { width: 140px; text: root.busy || root.login-reading ? "正在验证…" : "已完成登录"; primary: true; enabled: !root.busy && !root.login-reading; clicked => { root.finish-browser-login(); } }
                 }
@@ -687,7 +682,7 @@ export component AppWindow inherits Window {
                 }
                 Rectangle { height: 1px; background: Theme.line; }
                 ActionButton { text: "设置"; quiet: true; clicked => { account-menu.close(); if root.page != 1 { root.settings-return-page = root.page; } root.page = 1; } }
-                ActionButton { text: root.has-session ? "切换账号" : "连接头歌账号"; quiet: true; enabled: !root.busy && !root.workspace-busy; clicked => { account-menu.close(); root.login-open = true; root.cookie-path = ""; root.error-message = ""; } }
+                ActionButton { text: root.has-session ? "切换账号" : "连接头歌账号"; quiet: true; enabled: !root.busy && !root.workspace-busy; clicked => { account-menu.close(); root.login-open = true; root.error-message = ""; } }
                 Rectangle { height: 1px; background: Theme.line; }
                 ActionButton { text: "退出登录"; quiet: true; destructive: true; enabled: root.has-session && !root.busy && !root.workspace-busy; clicked => { account-menu.close(); root.logout(); } }
             }

@@ -1,4 +1,4 @@
-//! User-driven official login. Remote pages receive no application IPC bridge.
+//! User-driven official WeChat QR login. Remote pages receive no application IPC bridge.
 use crate::{AppWindow, Controller};
 use educoder_core::{BrowserCookie, Session};
 use slint::{ComponentHandle, Timer, TimerMode, winit_030::WinitWindowAccessor};
@@ -13,7 +13,8 @@ use wry::{
     dpi::{LogicalPosition, LogicalSize},
 };
 
-const LOGIN_URL: &str = "https://www.educoder.net/user/login";
+// Educoder's quick-login action opens this page, which embeds WeChat's QR flow.
+const LOGIN_URL: &str = "https://www.educoder.net/wxlogin.html";
 const API_URL: &str = "https://data.educoder.net/api/";
 
 pub struct LoginHost {
@@ -36,7 +37,7 @@ impl LoginHost {
                 }
                 #[cfg(not(windows))]
                 app.set_error_message(
-                    "此平台暂未接入网页会话读取，请使用 Cookie 文件导入。".into(),
+                    "此平台暂不支持微信扫码登录，请使用 Windows 版客户端。".into(),
                 );
             }
         });
@@ -85,12 +86,12 @@ impl LoginHost {
                     Ok(cookies) => match Session::from_browser_cookies(&cookies) {
                         Ok(session) => controller.import_browser_session(session),
                         Err(_) => app.set_error_message(
-                            "尚未取得有效会话，请先在官方页面完成登录，再点击「已完成登录」。"
+                            "尚未取得有效会话，请先完成微信扫码并在手机上确认，再点击「已完成登录」。"
                                 .into(),
                         ),
                     },
                     Err(()) => app.set_error_message(
-                        "无法读取登录会话，请重试或使用 Cookie 文件导入。".into(),
+                        "无法读取登录会话，请完成微信扫码确认后重试。".into(),
                     ),
                 }
             });
@@ -147,8 +148,7 @@ impl LoginHost {
                     _ => {
                         app.set_browser_login_open(false);
                         app.set_error_message(
-                            "登录窗口启动失败，请检查 WebView2 运行时，或使用 Cookie 文件导入。"
-                                .into(),
+                            "登录窗口启动失败，请检查 WebView2 运行时后重试。".into(),
                         );
                         return;
                     }
@@ -192,9 +192,11 @@ fn allowed_login_url(url: String) -> bool {
         return false;
     };
     url.scheme_str() == Some("https")
-        && url
-            .host()
-            .is_some_and(|host| host == "educoder.net" || host.ends_with(".educoder.net"))
+        && url.host().is_some_and(|host| {
+            host == "educoder.net"
+                || host.ends_with(".educoder.net")
+                || (host == "open.weixin.qq.com" && url.path() == "/connect/qrconnect")
+        })
         && url
             .authority()
             .is_some_and(|authority| !authority.as_str().contains('@'))
@@ -301,11 +303,13 @@ fn request_cookies(
 mod tests {
     use super::*;
     #[test]
-    fn login_navigation_is_scoped_to_official_https_hosts() {
+    fn login_navigation_is_scoped_to_educoder_and_wechat_qr() {
         for url in [
             LOGIN_URL,
             "https://data.educoder.net/api/",
             "https://www.educoder.net:443/",
+            "https://www.educoder.net/otherloginstart?code=example&state=null",
+            "https://open.weixin.qq.com/connect/qrconnect?appid=example&scope=snsapi_login",
         ] {
             assert!(allowed_login_url(url.into()));
         }
@@ -315,6 +319,12 @@ mod tests {
             "https://evil.example/?next=educoder.net",
             "https://user@www.educoder.net/",
             "https://www.educoder.net:444/",
+            "https://open.weixin.qq.com.evil.example/connect/qrconnect",
+            "https://open.weixin.qq.com/connect/oauth2/authorize",
+            "https://open.weixin.qq.com/",
+            "http://open.weixin.qq.com/connect/qrconnect",
+            "https://user@open.weixin.qq.com/connect/qrconnect",
+            "https://open.weixin.qq.com:444/connect/qrconnect",
             "javascript:alert(1)",
             "file:///tmp/login",
         ] {
