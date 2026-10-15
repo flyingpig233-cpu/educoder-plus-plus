@@ -193,6 +193,29 @@ pub(crate) struct EvaluationResultDto {
     evaluate_count: Option<u64>,
 }
 impl EvaluationResultDto {
+    pub fn parse(mut value: serde_json::Value) -> crate::Result<Option<Evaluation>> {
+        let status = value
+            .get("status")
+            .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse().ok()))
+            .and_then(|v| i32::try_from(v).ok())
+            .ok_or(crate::Error::Response("评测结果 status 字段无效"))?;
+        // Queue/running replies are progress envelopes, not completed result schemas.
+        // Their result fields may be missing, null, or placeholder values.
+        match status {
+            401 | -401 => return Err(crate::Error::SessionExpired),
+            -102 => return Err(crate::Error::Clock),
+            -1 | -2 => return Ok(None),
+            0..=3 => {}
+            other => return Err(crate::Error::Platform(i64::from(other))),
+        }
+        value["status"] = serde_json::json!(status);
+        if value.get("test_sets").is_none_or(|v| v.is_null()) {
+            value["test_sets"] = serde_json::json!([]);
+        }
+        let dto: Self = serde_json::from_value(value)
+            .map_err(|_| crate::Error::Response("评测结果测试集或编译输出字段无效"))?;
+        Ok(Some(dto.into_evaluation()))
+    }
     pub fn into_evaluation(self) -> Evaluation {
         Evaluation {
             status: if self.status == 2 { 2 } else { 3 },
@@ -419,6 +442,32 @@ fn optional_score<'de, D: serde::Deserializer<'de>>(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn evaluation_progress_is_not_a_completed_result_schema() {
+        for status in [json!(-1), json!("-1"), json!(-2)] {
+            assert!(
+                EvaluationResultDto::parse(
+                    json!({"status":status,"test_sets":null,"last_compile_output":false})
+                )
+                .unwrap()
+                .is_none()
+            );
+        }
+        let result = EvaluationResultDto::parse(
+            json!({"status":"2","test_sets":null,"last_compile_output":null}),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.status, 2);
+        assert!(result.tests.is_empty());
+        assert!(EvaluationResultDto::parse(json!({"status":2,"test_sets":"invalid"})).is_err());
+        assert!(EvaluationResultDto::parse(json!({"test_sets":[]})).is_err());
+        assert!(matches!(
+            EvaluationResultDto::parse(json!({"status":"401"})),
+            Err(crate::Error::SessionExpired)
+        ));
+    }
 
     #[test]
     fn report_scores_accept_platform_strings_and_preserve_ungraded_values() {

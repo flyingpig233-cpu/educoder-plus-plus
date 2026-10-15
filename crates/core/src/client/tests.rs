@@ -395,6 +395,121 @@ fn task_fixture(status: i32) -> Value {
 }
 
 #[tokio::test]
+async fn prefetch_is_shared_with_foreground_and_never_enters_an_instance() {
+    use crate::workspace::WorkspaceCache;
+    let (server, client) = client().await;
+    let temp = tempfile::tempdir().unwrap();
+    let store = crate::cache::CacheStore::at(temp.path(), "test").unwrap();
+    let workspace = WorkspaceCache::new(client, store.clone());
+    Mock::given(path("/api/tasks/g1.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(task_fixture(0)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    for file in ["main.rs", "helper.rs"] {
+        Mock::given(path("/api/tasks/g1/rep_content.json"))
+            .and(query_param("path", file))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"content":STANDARD.encode("// cached code")})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let (prefetch, foreground) = tokio::join!(
+        workspace.document(9, "g1", false),
+        workspace.document(9, "g1", false)
+    );
+    assert_eq!(prefetch.unwrap().files.len(), 2);
+    assert_eq!(foreground.unwrap().files.len(), 2);
+    assert!(
+        store
+            .get::<TaskDocument>("task:9:g1", Duration::from_secs(600))
+            .await
+            .is_some()
+    );
+    workspace.document(9, "g1", false).await.unwrap();
+    Mock::given(path("/api/shixuns/not-entered.json"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"name":"demo","myshixun_id":null})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let homework = Homework {
+        id: 9,
+        name: "demo".into(),
+        shixun_identifier: Some("not-entered".into()),
+        myshixun_identifier: None,
+        student_work_id: None,
+    };
+    assert!(workspace.games(&homework, false).await.unwrap().is_empty());
+    assert!(server.received_requests().await.unwrap().iter().all(|r| {
+        !r.url.path().contains("shixun_exec") && matches!(r.method, Method::GET | Method::HEAD)
+    }));
+}
+
+#[tokio::test]
+async fn a_prefetch_started_before_a_write_cannot_replace_the_new_cache() {
+    use crate::workspace::WorkspaceCache;
+    let (server, client) = client().await;
+    let temp = tempfile::tempdir().unwrap();
+    let store = crate::cache::CacheStore::at(temp.path(), "test").unwrap();
+    let workspace = WorkspaceCache::new(client, store.clone());
+    let mut fixture = task_fixture(0);
+    fixture["challenge"]["path"] = json!("main.rs");
+    Mock::given(path("/api/tasks/g1.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(fixture.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(path("/api/tasks/g1/rep_content.json"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(150))
+                .set_body_json(json!({"content":STANDARD.encode("old code")})),
+        )
+        .mount(&server)
+        .await;
+    let background = workspace.clone();
+    let fetch = tokio::spawn(async move { background.document(9, "g1", true).await });
+    for _ in 0..100 {
+        if server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path().ends_with("rep_content.json"))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    workspace.invalidate_reads().await;
+    let new = TaskDocument {
+        details: serde_json::from_value::<TaskDetailsDto>(fixture)
+            .unwrap()
+            .into_details("g1", 9),
+        files: vec![CodeFile {
+            path: "main.rs".into(),
+            content: b"new saved code".to_vec(),
+        }],
+    };
+    store.put("task:9:g1", &new).await.unwrap();
+    fetch.await.unwrap().unwrap();
+    assert_eq!(
+        store
+            .get::<TaskDocument>("task:9:g1", Duration::from_secs(600))
+            .await
+            .unwrap()
+            .value
+            .files[0]
+            .content,
+        b"new saved code"
+    );
+}
+
+#[tokio::test]
 async fn save_all_files_then_submit_once_with_signed_post_and_private_tests_redacted() {
     use wiremock::matchers::body_partial_json;
     let (server, client) = client().await;
@@ -473,7 +588,10 @@ async fn evaluation_status_uses_ticket_and_failure_zero_is_terminal() {
     Mock::given(path("/api/tasks/g1/game_status.json"))
         .and(query_param("sec_key", "secret"))
         .and(query_param("port", "8000"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status":-1})))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"status":"-1","test_sets":null,"last_compile_output":false})),
+        )
         .mount(&server)
         .await;
     assert_eq!(

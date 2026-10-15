@@ -150,6 +150,13 @@ pub struct TaskDetails {
     pub submission: Option<SubmissionContext>,
 }
 
+/// A complete editor snapshot, shared by foreground loading and background prefetch.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TaskDocument {
+    pub details: TaskDetails,
+    pub files: Vec<CodeFile>,
+}
+
 /// Temporary save receipt. Security keys never enter UI messages or persistent caches.
 pub struct SaveReceipt {
     pub(crate) commit_id: String,

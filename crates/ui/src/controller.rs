@@ -34,6 +34,7 @@ pub(super) struct State {
     pub kind: i32,
     pub homeworks: Vec<Homework>,
     pages: HashMap<(u64, i32, u32), (Instant, Page<Homework>)>,
+    pub workspace: Option<educoder_core::workspace::WorkspaceCache>,
 }
 
 /// Only the current request may publish results after a course/type switch.
@@ -56,6 +57,8 @@ pub struct Controller {
     version: RequestVersion,
     auth_version: RequestVersion,
     pub(super) avatar_version: AtomicU64,
+    pub(super) prefetch_version: AtomicU64,
+    pub(super) prefetch_job: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub(super) preferences: Mutex<Preferences>,
     pub(super) workbench: Mutex<WorkbenchState>,
     pub(super) operation: Arc<AtomicBool>,
@@ -73,6 +76,8 @@ impl Controller {
             version: RequestVersion::default(),
             auth_version: RequestVersion::default(),
             avatar_version: AtomicU64::new(0),
+            prefetch_version: AtomicU64::new(0),
+            prefetch_job: Mutex::new(None),
             preferences: Mutex::new(Preferences::default()),
             workbench: Mutex::new(WorkbenchState::default()),
             operation: Arc::new(AtomicBool::new(false)),
@@ -236,6 +241,7 @@ impl Controller {
     }
 
     fn connected(self: &Arc<Self>, app: &AppWindow, login: Login, notice: String) {
+        self.cancel_prefetch();
         self.cleanup_pending.store(false, Ordering::SeqCst);
         self.auth_version.next();
         self.version.next();
@@ -372,6 +378,7 @@ impl Controller {
 
     fn load_homeworks_with_policy(self: &Arc<Self>, force: bool) {
         let Some(app) = self.ui.upgrade() else { return };
+        self.cancel_prefetch();
         let (client, cache, id, page, kind, title, memory) = {
             let state = self.state.lock().expect("UI state");
             let (Some(client), Some(id)) = (&state.client, state.course_id) else {
@@ -466,7 +473,13 @@ impl Controller {
         });
     }
 
-    fn show_page(&self, app: &AppWindow, key: (u64, i32, u32), page: Page<Homework>, remote: bool) {
+    fn show_page(
+        self: &Arc<Self>,
+        app: &AppWindow,
+        key: (u64, i32, u32),
+        page: Page<Homework>,
+        remote: bool,
+    ) {
         let count = page.items.len();
         app.set_can_next(has_next_page(key.2, count, page.total));
         app.set_page_label(
@@ -485,11 +498,14 @@ impl Controller {
             }
             .into(),
         );
+        let prefetch = page.items.clone();
         let mut state = self.state.lock().expect("UI state");
         state.homeworks = page.items.clone();
         if remote {
             state.pages.insert(key, (Instant::now(), page));
         }
+        drop(state);
+        self.prefetch_homeworks(if key.1 == 0 { prefetch } else { Vec::new() });
     }
 
     fn refresh(self: &Arc<Self>) {
@@ -560,6 +576,7 @@ impl Controller {
     }
 
     fn reset(&self, app: &AppWindow) {
+        self.cancel_prefetch();
         self.avatar_version.fetch_add(1, Ordering::SeqCst);
         app.set_user_avatar(slint::Image::default());
         app.set_user_login("".into());

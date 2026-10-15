@@ -19,6 +19,8 @@ pub enum Error {
     Clock,
     #[error("响应结构不符合预期：{0}")]
     Response(&'static str),
+    #[error("代码已提交，读取评测结果失败：{0}。请刷新结果，勿重复提交")]
+    EvaluationRead(#[source] Box<Error>),
     #[error("参数无效：{0}")]
     InvalidInput(&'static str),
     #[error("本地文件操作失败")]

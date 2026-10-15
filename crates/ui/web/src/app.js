@@ -199,6 +199,7 @@ async function operation(action, payload={}) {
     const result=await request(action,{...payload,files:sent,entry:$('files').value,samples:structuredClone(state.samples)});
     if(action==='submit') { for(const file of sent) state.base.set(file.path,file.content); await flushDraft(); notice(result?.evaluation?.status===1?'评测仍在进行，正在后台查询结果。':'本次评测已结束');setTab('remote'); }
     if(result?.evaluation) showEvaluation(result.evaluation);
+    if(result?.result_error)error(result.result_error);
     if(result?.can_submit != null && state.task) state.task.can_submit=result.can_submit;
     if(action==='run') showLocal(result);
   } catch(e) { if(state.task && (action==='submit'||e.message.includes('结果未知') || e.message.includes('仍在进行')))state.task.can_submit=false; error(e.message);if(action==='submit')setTab('remote'); }

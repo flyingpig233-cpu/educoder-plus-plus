@@ -78,6 +78,16 @@ test('pending submission releases the UI and polls results without resubmitting'
 
 const answer={title:'求和',status:'public_samples_passed',editable_paths:['main.rs'],files:[{path:'answer/求和.rs',content:'fn main() { println!("42"); }'},{path:'answer/helper.rs',content:'pub fn answer() -> i32 { 42 }'}]};
 
+test('accepted submission with an unreadable result retains its saved baseline',async({page})=>{
+  await page.evaluate(()=>{window.educoder.editor.setValue('submitted code');window.submitReply={can_submit:false,evaluation:{status:1,compile_output:'',tests:[]},result_error:'代码已提交，读取评测结果失败：字段类型不符。正在继续查询，请勿重复提交。'};});
+  await page.click('#submit');await expect(page.locator('#error')).toContainText('代码已提交，读取评测结果失败');
+  await expect(page.locator('#submit')).toBeDisabled();
+  expect(await page.evaluate(()=>window.educoder.editor.getValue())).toBe('submitted code');
+  await expect(page.locator('#remote-status')).toHaveText('通过',{timeout:7000});
+  expect(await page.evaluate(()=>window.messages.filter(m=>m.action==='submit').length)).toBe(1);
+  expect(await page.evaluate(()=>window.messages.filter(m=>m.action==='sync').length)).toBe(0);
+});
+
 test('answers can be viewed, copied and imported with drafts and undo preserved',async({page,context})=>{
   await context.grantPermissions(['clipboard-read','clipboard-write']);
   await page.evaluate(answer=>{window.answerReply={answer,cached:true,stale:false};window.educoder.editor.setValue('original local draft');},answer);

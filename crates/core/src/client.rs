@@ -443,7 +443,7 @@ impl EducoderClient {
                 },
             ));
         }
-        let dto: EvaluationResultDto = self
+        let value: Value = self
             .get(&format!("/api/tasks/{game}/game_status.json"), &query)
             .await
             .map_err(|error| match error {
@@ -451,10 +451,9 @@ impl EducoderClient {
                 other => other,
             })?;
         let mut current = previous.clone();
-        if dto.status < 0 {
-            current.evaluation.status = 1;
-        } else {
-            current.evaluation = dto.into_evaluation();
+        match EvaluationResultDto::parse(value)? {
+            None => current.evaluation.status = 1,
+            Some(evaluation) => current.evaluation = evaluation,
         }
         Ok(current)
     }

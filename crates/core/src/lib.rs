@@ -9,6 +9,7 @@ pub mod runner;
 mod session;
 mod signing;
 mod vault;
+pub mod workspace;
 
 pub use client::{ClientOptions, EducoderClient};
 pub use error::{Error, Result};

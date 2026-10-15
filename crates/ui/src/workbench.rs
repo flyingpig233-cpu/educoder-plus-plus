@@ -1,7 +1,7 @@
 use crate::{AppWindow, Controller};
 use educoder_core::{
     EducoderClient, Error, Result,
-    models::{CodeFile, Game, Homework, TaskDetails},
+    models::{CodeFile, Game, Homework, TaskDetails, TaskDocument as Document},
     runner::{Sample, run_samples},
 };
 use serde::{Deserialize, Serialize};
@@ -21,11 +21,6 @@ pub(super) struct WorkbenchState {
     pending_write: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct Document {
-    details: TaskDetails,
-    files: Vec<CodeFile>,
-}
 #[derive(Clone, Serialize, Deserialize)]
 struct TextFile {
     path: String,
@@ -61,6 +56,142 @@ pub(super) fn publish(app: &AppWindow, value: Value) {
 }
 
 impl Controller {
+    fn workspace_cache(&self) -> Option<educoder_core::workspace::WorkspaceCache> {
+        let mut state = self.state.lock().expect("UI state");
+        if state.workspace.is_none() {
+            state.workspace = Some(educoder_core::workspace::WorkspaceCache::new(
+                state.client.clone()?,
+                state.cache.clone()?,
+            ));
+        }
+        state.workspace.clone()
+    }
+
+    pub(super) fn cancel_prefetch(&self) -> u64 {
+        let version = self.prefetch_version.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(job) = self.prefetch_job.lock().expect("prefetch job").take() {
+            job.abort();
+        }
+        version
+    }
+
+    pub(super) fn prefetch_homeworks(self: &Arc<Self>, homeworks: Vec<Homework>) {
+        let version = self.cancel_prefetch();
+        if homeworks.is_empty() {
+            return;
+        }
+        let Some(workspace) = self.workspace_cache() else {
+            return;
+        };
+        let (course, current_page) = {
+            let state = self.state.lock().expect("UI state");
+            (state.course_id, state.page.max(1))
+        };
+        let c = self.clone();
+        let ui = self.ui.clone();
+        let job = self.runtime.spawn(async move {
+            let mut loaded = 0;
+            let mut failed = 0;
+            let mut next_page = 1;
+            let mut more_pages = !(current_page == 1 && homeworks.len() < 20);
+            let mut queue = std::collections::VecDeque::from(homeworks);
+            let mut seen = std::collections::HashSet::new();
+            loop {
+                let homework = if let Some(homework) = queue.pop_front() {
+                    homework
+                } else {
+                    if !more_pages {
+                        break;
+                    }
+                    if next_page == current_page {
+                        next_page += 1;
+                    }
+                    let Some(course) = course else { break };
+                    while c.operation.load(Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    match workspace.homework_page(course, next_page).await {
+                        Ok(page) => {
+                            more_pages = page.items.len() == 20
+                                && page
+                                    .total
+                                    .is_none_or(|total| u64::from(next_page) * 20 < total);
+                            next_page += 1;
+                            queue.extend(page.items.into_iter().filter(|h| !seen.contains(&h.id)));
+                            if queue.is_empty() {
+                                break;
+                            }
+                            continue;
+                        }
+                        Err(_) => {
+                            failed += 1;
+                            break;
+                        }
+                    }
+                };
+                if !seen.insert(homework.id) {
+                    continue;
+                }
+                while c.operation.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+                let games = match workspace.games(&homework, false).await {
+                    Ok(games) => games,
+                    Err(Error::SessionExpired) => break,
+                    Err(_) => {
+                        failed += 1;
+                        continue;
+                    }
+                };
+                for game in games {
+                    while c.operation.load(Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                    match workspace
+                        .document(homework.id, &game.identifier, false)
+                        .await
+                    {
+                        Ok(_) => loaded += 1,
+                        Err(Error::SessionExpired) => return,
+                        Err(_) => failed += 1,
+                    }
+                    let c2 = c.clone();
+                    let _ = ui.upgrade_in_event_loop(move |app| {
+                        if c2.prefetch_version.load(Ordering::SeqCst) == version {
+                            app.set_cache_status(
+                                format!(
+                                    "后台已缓存 {loaded} 道题{}",
+                                    if failed > 0 {
+                                        format!(" · {failed} 项暂未获取")
+                                    } else {
+                                        String::new()
+                                    }
+                                )
+                                .into(),
+                            );
+                        }
+                    });
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+            let _ = ui.upgrade_in_event_loop(move |app| {
+                if c.prefetch_version.load(Ordering::SeqCst) == version {
+                    app.set_cache_status(
+                        format!(
+                            "后台缓存完成：{loaded} 道题{}",
+                            if failed > 0 {
+                                format!(" · {failed} 项暂未获取")
+                            } else {
+                                String::new()
+                            }
+                        )
+                        .into(),
+                    );
+                }
+            });
+        });
+        *self.prefetch_job.lock().expect("prefetch job") = Some(job);
+    }
     pub(super) fn has_editor(&self) -> bool {
         let state = self.workbench.lock().expect("workbench");
         state.document.is_some() && state.ready
@@ -131,6 +262,7 @@ impl Controller {
         let (Some(homework), Some(client)) = (homework, client) else {
             return;
         };
+        let workspace = self.workspace_cache();
         if homework.shixun_identifier.is_none() {
             app.set_notice("该作业不包含可打开的实训代码工作区。".into());
             return;
@@ -167,6 +299,9 @@ impl Controller {
                 }
             }
             let result = async {
+                if let Some(workspace) = workspace {
+                    return workspace.games(&homework, false).await;
+                }
                 if let Some(instance) = &homework.myshixun_identifier {
                     client.get_my_challenges(instance).await
                 } else {
@@ -235,6 +370,7 @@ impl Controller {
             (state.client.clone(), state.cache.clone())
         };
         let Some(client) = client else { return };
+        let workspace = self.workspace_cache();
         let (homework_id, version) = {
             let mut state = self.workbench.lock().expect("workbench");
             if !state.games.iter().any(|g| g.identifier == game) {
@@ -284,7 +420,11 @@ impl Controller {
                     return;
                 }
             }
+            let manages_cache = workspace.is_some();
             let result = async {
+                if let Some(workspace) = workspace {
+                    return workspace.document(homework_id, &game, force).await;
+                }
                 let details = client.get_task_details(&game, homework_id).await?;
                 let mut files = Vec::new();
                 let mut size = 0usize;
@@ -305,7 +445,7 @@ impl Controller {
             let mut draft = Draft::default();
             let mut pending = false;
             if let Some(store) = &cache {
-                if let Ok(document) = &result {
+                if !manages_cache && let Ok(document) = &result {
                     let _ = store.put(&key, document).await;
                 }
                 draft = store
@@ -713,7 +853,7 @@ impl Controller {
                     }
                     let details = client
                         .get_evaluation(&previous)
-                        .await?;
+                        .await.map_err(|error| if previous.evaluation.status==1 && !matches!(error,Error::SessionExpired) {Error::EvaluationRead(Box::new(error))}else{error})?;
                     if details.evaluation.status != 1
                         && let Some(store) = &cache {
                             store
@@ -772,6 +912,7 @@ impl Controller {
                         }
                 }
                 let details = prepare_write(&client, &document, &files).await?;
+                if let Some(workspace)=c.workspace_cache(){workspace.invalidate_reads().await;}
                 if let Some(store) = &cache {
                     if message.action == "sync" {
                         store.put(&format!("pending-sync:{}", message.context), &true).await?;
@@ -800,6 +941,7 @@ impl Controller {
                         }
                     return Err(error);
                 }
+                let mut result_error = None;
                 let result = if message.action == "submit" {
                     match client
                         .wait_for_evaluation(&details, Duration::from_secs(60))
@@ -810,7 +952,13 @@ impl Controller {
                             pending.evaluation.status = 1;
                             pending
                         }
-                        Err(error) => return Err(error),
+                        Err(Error::SessionExpired) => return Err(Error::SessionExpired),
+                        Err(error) => {
+                            result_error = Some(format!("代码已提交，读取评测结果失败：{error}。正在继续查询，请勿重复提交。"));
+                            let mut pending = details;
+                            pending.evaluation.status = 1;
+                            pending
+                        }
                     }
                 } else {
                     details
@@ -841,7 +989,7 @@ impl Controller {
                         .await;
                 }
                 Ok((
-                    json!({"evaluation":result.evaluation,"can_submit":result.submission.is_some()&&result.evaluation.status!=1}),
+                    json!({"evaluation":result.evaluation,"can_submit":result.submission.is_some()&&result.evaluation.status!=1,"result_error":result_error}),
                     Some(result),
                     Some(merged),
                 ))
