@@ -107,14 +107,14 @@ async function loadAnswers(refresh=false) {
   if(!state.task||answerLoading)return;
   const game=state.game, sequence=++answerSequence;
   answerLoading=true;answerData=null;answerGame=game;
-  $('answer-dialog').showModal();$('answer-title').textContent=`答案 · ${state.task.title}`;
+  $('answer-dialog').showModal();$('answer-title').textContent=`题解 · ${state.task.title}`;
   $('answer-status').textContent='正在查找答案…';$('answer-code').value='';options($('answer-files'),[]);updateAnswerButtons();
   try {
     const result=await request('answers',{refresh});
     if(sequence!==answerSequence||game!==state.game)return;
     answerData=result.answer;
     const status=({public_samples_passed:'公开样例通过',statement_examples_passed:'题面推导测试通过'})[answerData?.status]??answerData?.status??'';
-    $('answer-status').textContent=answerData?`${answerData.title} · ${status}${result.stale?' · 更新失败，显示旧缓存':result.cached?' · 本地缓存':''}`:'未找到对应答案';
+    $('answer-status').textContent=answerData?`${status||"已找到题解"}${result.stale?' · 更新失败，显示旧缓存':result.cached?' · 本地缓存':''}`:'未找到对应答案';
     options($('answer-files'),(answerData?.files??[]).map((f,i)=>({value:String(i),text:f.path})),'0');showAnswerFile();
   } catch(e) { if(sequence===answerSequence)$('answer-status').textContent=`答案查找失败：${e.message}，可点击重新查找。`; }
   finally {if(sequence===answerSequence){answerLoading=false;updateAnswerButtons();}}
@@ -260,7 +260,8 @@ function showLocal(result) {
   for(const sample of result.samples??[]){const o=sample.output;append(`${sample.name} · ${o.timed_out?'运行超时':sample.passed===true?'通过':sample.passed===false?'未通过':'已运行'} · ${o.elapsed_ms} ms`, `stdout:\n${o.stdout}\n${o.stderr?'stderr:\n'+o.stderr:''}${o.truncated?'\n输出已达到大小上限。':''}`, sample.passed===true?'passed':sample.passed===false||o.timed_out?'failed':'');}
   setTab('local');
 }
-function setTab(tab){activeTab=tab; $('local-tab').hidden=tab!=='local';$('remote-tab').hidden=tab!=='remote';animateContent($(tab==='local'?'local-tab':'remote-tab'));document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));}
+function updateTabIndicator(){const selected=document.querySelector('.result-tabs button.selected'),indicator=document.querySelector('.tab-indicator');if(!selected||!indicator)return;indicator.style.width=`${selected.offsetWidth}px`;indicator.style.transform=`translateX(${selected.offsetLeft}px)`;}
+function setTab(tab){activeTab=tab; $('local-tab').hidden=tab!=='local';$('remote-tab').hidden=tab!=='remote';animateContent($(tab==='local'?'local-tab':'remote-tab'));document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.tab===tab));updateTabIndicator();}
 
 function receive(message) {
   if(message.reply_to){const callback=pending.get(message.reply_to);if(!callback)return;clearTimeout(callback.timer);pending.delete(message.reply_to);message.ok?callback.resolve(message.data):callback.reject(new Error(message.error??'操作失败'));return;}
@@ -322,6 +323,9 @@ $('refresh-result').onclick=()=>operation('result').then(()=>setTab('remote'));
 $('refresh-task').onclick=()=>operation('refresh');
 $('enter').onclick=()=>operation('enter');
 document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>setTab(button.dataset.tab));
+const tabObserver=new ResizeObserver(updateTabIndicator);
+document.querySelectorAll('.result-tabs,.result-tabs button').forEach(element=>tabObserver.observe(element));
+document.fonts.ready.then(updateTabIndicator);
 $('samples').onchange=()=>{storeSample();state.sampleIndex=Number($('samples').value);showSamples();};
 $('add-sample').onclick=()=>{storeSample();if(state.samples.length>=100)return;state.samples.push({name:`自定义样例 ${state.samples.length+1}`,input:'',expected:null});state.sampleIndex=state.samples.length-1;showSamples();};
 $('remove-sample').onclick=()=>{if(state.samples.length<=1)return;state.samples.splice(state.sampleIndex,1);state.sampleIndex=Math.min(state.sampleIndex,state.samples.length-1);showSamples();};

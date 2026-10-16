@@ -17,7 +17,7 @@
   <div id="error" role="alert" hidden></div>
   <main id="workspace">
     <section class="problem-pane">
-      <div class="section-heading">题目描述 <span class="heading-actions"><button id="answers">查看答案</button><button id="refresh-task" class="refresh-button" aria-label="刷新题目"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-.9L20 9M4 15l2.3 2.9A7 7 0 0 0 17.9 17"/></svg></button></span></div>
+      <div class="section-heading">题目描述 <span class="heading-actions"><button id="answers">题解</button><button id="refresh-task" class="refresh-button" aria-label="刷新题目"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-.9L20 9M4 15l2.3 2.9A7 7 0 0 0 17.9 17"/></svg></button></span></div>
       <article id="description" class="markdown"><p class="muted">选择作业后，在这里阅读题目。</p></article>
       <div id="enter-panel" hidden><p>此实训尚未创建个人实例。</p><button id="enter">进入实训</button></div>
     </section>
@@ -35,6 +35,7 @@
           <button data-tab="local" class="selected">本地测试</button>
           <button data-tab="remote">平台结果与测试集</button>
           <span id="operation-status" class="muted"></span>
+          <span class="tab-indicator" aria-hidden="true"></span>
         </nav>
         <div id="local-tab" class="tab-content">
           <div class="sample-toolbar"><select id="samples" aria-label="选择本地样例"></select><button id="add-sample">添加样例</button><button id="remove-sample">删除</button><button id="run" class="primary">编译并运行</button><button id="settings">编译环境设置</button></div>
@@ -46,13 +47,14 @@
     </section>
   </main>
   <dialog id="answer-dialog" aria-labelledby="answer-title">
-    <div class="answer-heading"><strong id="answer-title">题目答案</strong><button id="close-answer" aria-label="关闭答案">×</button></div>
+    <header class="answer-heading"><strong id="answer-title">题解</strong><button id="close-answer" aria-label="关闭答案">×</button></header>
+    <div class="answer-toolbar"><select id="answer-files" aria-label="选择答案文件"></select><button id="reload-answer" class="refresh-button" aria-label="重新查找答案"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-.9L20 9M4 15l2.3 2.9A7 7 0 0 0 17.9 17"/></svg></button><button id="copy-answer">复制代码</button></div>
     <p id="answer-status" role="status"></p>
-    <p class="muted">来源：gitee.com/flyingpigcpu-233/educoder-answer。仓库答案为本地验证版本，平台隐藏测试结果以实际评测为准。</p>
-    <div class="sample-toolbar"><select id="answer-files" aria-label="选择答案文件"></select><button id="reload-answer" class="refresh-button" aria-label="重新查找答案"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-.9L20 9M4 15l2.3 2.9A7 7 0 0 0 17.9 17"/></svg></button><button id="copy-answer">复制答案代码</button></div>
-    <textarea id="answer-code" readonly aria-label="答案代码" spellcheck="false"></textarea>
-    <p class="muted">完整程序只可导入同类型代码文件；头文件或填空题请选取答案片段后插入。导入覆盖目标文件，可用 Ctrl+Z 撤销；代码会后台同步，不会自动提交评测。</p>
-    <div class="sample-toolbar"><label>导入目标<select id="answer-target" aria-label="答案导入目标"></select></label><button id="import-answer">覆盖目标文件</button><button id="insert-answer">插入所选片段</button></div>
+    <textarea id="answer-code" readonly aria-label="答案代码" spellcheck="false" placeholder="题解代码将在这里显示"></textarea>
+    <footer class="answer-footer">
+      <div class="answer-import"><label for="answer-target">导入到</label><select id="answer-target" aria-label="答案导入目标"></select><button id="insert-answer">插入选中代码</button><button id="import-answer" class="primary">覆盖文件</button></div>
+      <div class="answer-notes"><span>可用 Ctrl+Z 撤销 · 导入后自动同步</span><details><summary>来源与说明</summary><p>来源：gitee.com/flyingpigcpu-233/educoder-answer。平台结果以实际评测为准。完整程序只可覆盖同类型文件；填空题或头文件请选择代码片段插入。导入后请自行提交评测。</p></details></div>
+    </footer>
   </dialog>
   <div id="ac-celebration" hidden aria-live="polite" role="status"><canvas id="confetti-canvas" aria-hidden="true"></canvas><div class="ac-toast"><strong>AC</strong><span>Accepted · 全部测试通过</span></div></div>
   <script type="module" src="app.js"></script>

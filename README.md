@@ -46,13 +46,13 @@ Windows 版仅提供微信扫码登录，内嵌头歌官方二维码页面；手
 
 ## 下载与开始使用
 
-1. 前往 [GitHub Releases](https://github.com/flyingpig233-cpu/educoder-plus-plus/releases)，下载 `EducoderPlusPlus-1.1.0-windows-x64.exe`。
+1. 前往 [GitHub Releases](https://github.com/flyingpig233-cpu/educoder-plus-plus/releases)，下载 `EducoderPlusPlus-1.2.0-windows-x64.exe`。
 2. 将 EXE 放到任意目录直接运行，无需安装本项目、Rust 或 Node.js。
 3. 点击「连接头歌账号」→「微信扫码登录」，扫码并在手机上确认后点击「已完成登录」。
 4. 选择课堂和实训作业，进入关卡开始编辑。尚无个人实训实例时，需主动点击「进入实训」。
 5. 按需运行本地样例，确认同步状态后点击「提交评测」，在工作区查看结果。
 
-**运行要求：**1.1 发布包面向 Windows 10/11 x64，依赖 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。运行时通常已随系统或 Edge 安装，缺失时需先安装。本地编译运行需另行安装相应语言工具链，在线编辑与评测不要求安装这些工具链。
+**运行要求：**1.2 发布包面向 Windows 10/11 x64，依赖 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。运行时通常已随系统或 Edge 安装，缺失时需先安装。本地编译运行需另行安装相应语言工具链，在线编辑与评测不要求安装这些工具链。
 
 **单文件的含义：**应用代码、界面、图标和离线编辑器资源打包为一个 EXE，发布构建静态链接 MSVC C 运行库；WebView2 使用系统运行时。配置、缓存与草稿保存在系统用户数据目录，登录会话保存在系统凭据库，不随 EXE 移动到其他电脑。
 

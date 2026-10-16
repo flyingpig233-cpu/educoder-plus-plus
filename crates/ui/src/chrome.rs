@@ -291,6 +291,38 @@ mod native_frame {
     const SUBCLASS_ID: usize = 0x45445543;
     pub(super) struct FrameGuard(HWND);
 
+    /// Frame styles are cached by Windows. Commit caption changes before the
+    /// size transition, and after restoring the frameless state, rather than
+    /// letting the next maximize/restore apply a stale non-client frame.
+    unsafe fn set_caption(hwnd: HWND, enabled: bool) {
+        unsafe {
+            let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
+            let updated = if enabled {
+                style | WS_CAPTION
+            } else {
+                style & !WS_CAPTION
+            };
+            if updated != style {
+                SetWindowLongW(hwnd, GWL_STYLE, updated as i32);
+                refresh_frame(hwnd);
+            }
+        }
+    }
+
+    unsafe fn refresh_frame(hwnd: HWND) {
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+            );
+        }
+    }
+
     pub fn prepare_transition(window: &Window, animate: bool) {
         let Ok(handle) = window.window_handle() else {
             return;
@@ -302,8 +334,7 @@ mod native_frame {
         unsafe {
             SetWindowSubclass(hwnd, Some(frame_proc), SUBCLASS_ID, usize::from(animate));
             if animate {
-                let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-                SetWindowLongW(hwnd, GWL_STYLE, (style | WS_CAPTION) as i32);
+                set_caption(hwnd, true);
             }
             let disabled = i32::from(!animate);
             DwmSetWindowAttribute(
@@ -328,8 +359,7 @@ mod native_frame {
         let hwnd = handle.hwnd.get() as HWND;
         unsafe {
             SetWindowSubclass(hwnd, Some(frame_proc), SUBCLASS_ID, 0);
-            let style = GetWindowLongW(hwnd, GWL_STYLE) as u32;
-            SetWindowLongW(hwnd, GWL_STYLE, (style & !WS_CAPTION) as i32);
+            set_caption(hwnd, false);
         }
     }
 
@@ -356,15 +386,7 @@ mod native_frame {
                     (&policy as *const i32).cast(),
                     std::mem::size_of::<i32>() as u32,
                 );
-                SetWindowPos(
-                    hwnd,
-                    std::ptr::null_mut(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
-                );
+                refresh_frame(hwnd);
             }
             Some(Self(hwnd))
         }
